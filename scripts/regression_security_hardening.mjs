@@ -117,6 +117,49 @@ async function assertUploadPathSafety() {
     assert.ok(isUnder(resolve(pdfUpload.body.path), resolve(runtimeRoot, 'uploads')), `pdf upload escaped root: ${pdfUpload.body.path}`);
     assert.ok(!existsSync(outsideMarker), 'malicious pdf filename executed injected Python');
     assert.doesNotMatch(pdfUpload.body.name, /'/, 'stored upload name should be sanitized');
+
+    const onboarding = await postJson({
+      port,
+      token,
+      path: '/api/onboarding',
+      value: {
+        assistantName: 'Assistant',
+        intake: {
+          tier1: {
+            basics: 'Security Candidate',
+            targetRole: 'Security Operations',
+            logistics: 'Remote',
+            compensation: 'Market',
+          },
+          tier2: {},
+          tier3: {},
+        },
+        connections: {
+          providers: { greenhouse: true, lever: true, ashby: true, rss: true },
+          rssFeeds: ['https://example.com/jobs.xml'],
+          targetCompanies: ['Example Labs'],
+        },
+        onboarded: true,
+      },
+    });
+    assert.equal(onboarding.res.status, 200, JSON.stringify(onboarding.body));
+    const portals = readFileSync(resolve(profileRoot, 'portals.yml'), 'utf-8');
+    assert.match(portals, /tracked_companies:/);
+    assert.match(portals, /provider: greenhouse/);
+    assert.match(portals, /provider: lever/);
+    assert.match(portals, /provider: ashby/);
+    assert.match(portals, /rss_feeds:\n\s+- name: "Custom RSS 1"\n\s+url: "https:\/\/example\.com\/jobs\.xml"/);
+
+    const cleared = await postJson({
+      port,
+      token,
+      path: '/api/connections/custom/clear',
+      value: {},
+    });
+    assert.equal(cleared.res.status, 200, JSON.stringify(cleared.body));
+    const clearedPortals = readFileSync(resolve(profileRoot, 'portals.yml'), 'utf-8');
+    assert.doesNotMatch(clearedPortals, /example\.com\/jobs\.xml/);
+    assert.doesNotMatch(clearedPortals, /Example Labs/);
   } catch (err) {
     err.message += `\nserver stdout:\n${stdout}\nserver stderr:\n${stderr}`;
     throw err;

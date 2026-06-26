@@ -671,6 +671,28 @@ function csvCell(value = '') {
   return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
 }
 
+function targetCompanySlug(value = '') {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9]+/g, '')
+    .trim();
+}
+
+function generatedTargetCompanyEntries(companies = []) {
+  const entries = [];
+  for (const company of companies.map(value => String(value || '').trim()).filter(Boolean)) {
+    const slug = targetCompanySlug(company);
+    if (!slug) continue;
+    entries.push(
+      { name: `${company} (Greenhouse)`, provider: 'greenhouse', careersUrl: `https://job-boards.greenhouse.io/${slug}` },
+      { name: `${company} (Lever)`, provider: 'lever', careersUrl: `https://jobs.lever.co/${slug}` },
+      { name: `${company} (Ashby)`, provider: 'ashby', careersUrl: `https://jobs.ashbyhq.com/${slug}` },
+    );
+  }
+  return entries;
+}
+
 function writeOnboardingArtifacts(current = config) {
   mkdirSync(PROFILE_ROOT, { recursive: true });
   const tier1 = current.intake?.tier1 || {};
@@ -711,12 +733,28 @@ function writeOnboardingArtifacts(current = config) {
     `Compensation constraints: ${profile.compensation}`,
   ].join('\n'));
   const portalsPath = resolve(PROFILE_ROOT, 'portals.yml');
+  const rssFeeds = (current.connections?.rssFeeds || []).map((url, index) => ({
+    name: `Custom RSS ${index + 1}`,
+    url: String(url || '').trim(),
+  })).filter(feed => feed.url);
+  const targetEntries = generatedTargetCompanyEntries(current.connections?.targetCompanies || []);
   writeTextAtomic(portalsPath, [
     '# Suitor generated provider configuration',
     'providers:',
     ...Object.entries(current.connections?.providers || {}).map(([name, enabled]) => `  ${name}: ${enabled ? 'true' : 'false'}`),
+    'tracked_companies:',
+    ...targetEntries.flatMap(entry => [
+      `  - name: ${JSON.stringify(entry.name)}`,
+      `    provider: ${entry.provider}`,
+      `    careers_url: ${JSON.stringify(entry.careersUrl)}`,
+      '    enabled: true',
+    ]),
     'rss_feeds:',
-    ...(current.connections?.rssFeeds || []).map(url => `  - ${JSON.stringify(url)}`),
+    ...rssFeeds.flatMap(feed => [
+      `  - name: ${JSON.stringify(feed.name)}`,
+      `    url: ${JSON.stringify(feed.url)}`,
+      '    enabled: true',
+    ]),
     'target_companies:',
     ...(current.connections?.targetCompanies || []).map(name => `  - ${JSON.stringify(name)}`),
   ].join('\n') + '\n');
@@ -746,7 +784,10 @@ function connectionStatus() {
       status: process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY ? 'connected' : 'not_set_up',
     },
     customRss: { count: (config.connections?.rssFeeds || []).length },
-    targetCompanies: { count: (config.connections?.targetCompanies || []).length },
+    targetCompanies: {
+      count: (config.connections?.targetCompanies || []).length,
+      generatedBoards: generatedTargetCompanyEntries(config.connections?.targetCompanies || []),
+    },
   };
 }
 
@@ -3220,6 +3261,7 @@ async function handleApi(req, res, pathname) {
       masterResume: masterResumeStatePayload(),
       scanState: readScanState(),
       browser: readBrowserStatus(),
+      connections: connectionStatus(),
       learningSummary: learningSummary(),
       chatHistory: readChatHistory(),
       resumePreview: resumePreviewMarkdown().markdown,
@@ -3262,6 +3304,27 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/connections' && req.method === 'GET') {
     return send(res, 200, connectionStatus());
+  }
+
+  if (pathname === '/api/connections/custom/clear' && req.method === 'POST') {
+    config.connections ||= {};
+    config.connections.rssFeeds = [];
+    config.connections.targetCompanies = [];
+    saveConfig(config);
+    writeOnboardingArtifacts(config);
+    return send(res, 200, { ok: true, connections: connectionStatus() });
+  }
+
+  if (pathname === '/api/connections/linkedin/disconnect' && req.method === 'POST') {
+    config.connections ||= {};
+    config.connections.linkedin = { enabled: false };
+    saveConfig(config);
+    if (isUnder(BROWSER_ROOT, DATA_ROOT) && existsSync(BROWSER_ROOT)) {
+      rmSync(BROWSER_ROOT, { recursive: true, force: true });
+      mkdirSync(BROWSER_ROOT, { recursive: true });
+    }
+    writeOnboardingArtifacts(config);
+    return send(res, 200, { ok: true, connections: connectionStatus() });
   }
 
   if (pathname === '/api/learning-summary' && req.method === 'GET') {

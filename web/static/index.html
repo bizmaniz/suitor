@@ -172,6 +172,23 @@
 
       <section id="settingsView" class="view">
         <div class="settings-grid">
+          <section class="setting-card connections-card">
+            <div class="setting-card-header">
+              <div>
+                <h3>Connections</h3>
+                <p>Local sources and integrations. Data stays on this machine.</p>
+              </div>
+              <button id="editConnectionsBtn" class="button-secondary compact" type="button">Edit</button>
+            </div>
+            <div id="connectionsList" class="connections-list"></div>
+            <div class="doc-toolbar">
+              <button id="clearCustomSourcesBtn" class="button-secondary compact" type="button">Clear Custom Sources</button>
+              <button id="disconnectLinkedInBtn" class="button-secondary compact" type="button">Disconnect LinkedIn</button>
+              <button id="backupDbBtn" class="button-secondary compact" type="button">Backup DB</button>
+              <a id="exportJsonLink" class="button-secondary compact" href="/api/export" target="_blank" rel="noreferrer">Export JSON</a>
+              <a id="exportCsvLink" class="button-secondary compact" href="/api/export.csv" target="_blank" rel="noreferrer">Export CSV</a>
+            </div>
+          </section>
           <section class="setting-card reference-card">
             <h3>Reference Docs</h3>
             <div class="doc-actions">

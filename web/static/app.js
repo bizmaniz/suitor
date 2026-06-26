@@ -79,6 +79,11 @@ const els = {
   clearChat: $('#clearChat'),
   docViewer: $('#docViewer'),
   copyDocBtn: $('#copyDocBtn'),
+  connectionsList: $('#connectionsList'),
+  editConnectionsBtn: $('#editConnectionsBtn'),
+  clearCustomSourcesBtn: $('#clearCustomSourcesBtn'),
+  disconnectLinkedInBtn: $('#disconnectLinkedInBtn'),
+  backupDbBtn: $('#backupDbBtn'),
   assessmentInput: $('#assessmentInput'),
   assessmentList: $('#assessmentList'),
   assessmentRoot: $('#assessmentRoot'),
@@ -381,6 +386,37 @@ function renderBrowserResults(payload = {}) {
           ${result.url ? `<a href="${escapeHtml(result.url)}" target="_blank" rel="noreferrer">Open</a>` : ''}
         </article>
       `).join('')}
+    </div>
+  `;
+}
+
+function renderConnections(connections = {}) {
+  if (!els.connectionsList) return;
+  const providers = Array.isArray(connections.providers) ? connections.providers : [];
+  const providerSummary = providers.length
+    ? `${providers.filter(item => item.enabled).length}/${providers.length} providers enabled`
+    : 'Provider status unavailable';
+  const boards = connections.targetCompanies?.generatedBoards || [];
+  els.connectionsList.innerHTML = `
+    <div class="connection-row">
+      <div><strong>Scanned-jobs database</strong><span>${escapeHtml(connections.database?.path || 'Local SQLite database')}</span></div>
+      <small>${Number(connections.database?.jobCount || 0)} jobs / ${Number(connections.database?.applicationCount || 0)} applications</small>
+    </div>
+    <div class="connection-row">
+      <div><strong>LinkedIn</strong><span>${escapeHtml(connections.linkedin?.dataStored || 'Manual browser session only')}</span></div>
+      <small>${escapeHtml(connections.linkedin?.status || 'not_set_up')}</small>
+    </div>
+    <div class="connection-row">
+      <div><strong>API/feed providers</strong><span>${escapeHtml(providerSummary)}</span></div>
+      <small>${providers.filter(item => item.enabled).map(item => item.name).slice(0, 4).join(', ') || 'none'}</small>
+    </div>
+    <div class="connection-row">
+      <div><strong>Custom RSS</strong><span>User-supplied feeds stored in local config</span></div>
+      <small>${Number(connections.customRss?.count || 0)} feed${Number(connections.customRss?.count || 0) === 1 ? '' : 's'}</small>
+    </div>
+    <div class="connection-row">
+      <div><strong>Target company resolver</strong><span>Generates Greenhouse, Lever, and Ashby board candidates</span></div>
+      <small>${Number(connections.targetCompanies?.count || 0)} companies / ${boards.length} board candidates</small>
     </div>
   `;
 }
@@ -2066,6 +2102,7 @@ async function bootstrap() {
     renderAssessments(data.assessments || []);
     renderMasterResume(data.masterResume || null);
     renderBrowserStatus(data.browser || {});
+    renderConnections(data.connections || {});
     if (els.assessmentRoot && data.assessmentsRoot) {
       els.assessmentRoot.textContent = `PDF and Word assessments save to ${data.assessmentsRoot}. The assistant uses them as soft job-fit context.`;
     }
@@ -2765,6 +2802,28 @@ els.copyDocBtn.addEventListener('click', async () => {
   if (!els.docViewer.textContent.trim()) return;
   await navigator.clipboard.writeText(els.docViewer.textContent);
   showToast('Reference copied');
+});
+
+els.editConnectionsBtn?.addEventListener('click', () => showOnboardingWizard(true));
+
+els.clearCustomSourcesBtn?.addEventListener('click', async () => {
+  if (!confirm('Clear custom RSS feeds and target companies from this profile?')) return;
+  const response = await api('/api/connections/custom/clear', { method: 'POST', body: JSON.stringify({}) });
+  renderConnections(response.connections || {});
+  showToast('Custom sources cleared');
+});
+
+els.disconnectLinkedInBtn?.addEventListener('click', async () => {
+  if (!confirm('Disconnect LinkedIn and clear the local browser session for this profile?')) return;
+  const response = await api('/api/connections/linkedin/disconnect', { method: 'POST', body: JSON.stringify({}) });
+  renderConnections(response.connections || {});
+  await refreshBrowserStatus();
+  showToast('LinkedIn disconnected');
+});
+
+els.backupDbBtn?.addEventListener('click', async () => {
+  const response = await api('/api/backup', { method: 'POST', body: JSON.stringify({}) });
+  showToast(response.backupPath ? `Backup saved: ${response.backupPath}` : 'Backup saved');
 });
 
 if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark');

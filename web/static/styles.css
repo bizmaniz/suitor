@@ -2116,6 +2116,44 @@ input:focus-visible {
   flex: 1;
 }
 
+.setting-card-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setting-card-header p {
+  margin: 4px 0 0;
+}
+
+.connections-list {
+  display: grid;
+  gap: 8px;
+  margin: 12px 0;
+}
+
+.connection-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 1px solid var(--border, #d9e0e7);
+  border-radius: 8px;
+  padding: 10px;
+  background: var(--surface, #f7f9fb);
+}
+
+.connection-row div {
+  display: grid;
+  gap: 2px;
+}
+
+.connection-row span,
+.connection-row small {
+  color: var(--muted, #66717f);
+}
+
 @media (max-width: 720px) {
   .onboarding-overlay {
     padding: 12px;
