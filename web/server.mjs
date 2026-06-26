@@ -109,6 +109,10 @@ const QUICK_SCAN_HISTORY_PATH = resolve(DATA_ROOT, 'scan-history.tsv');
 const MASTER_RESUME_STATE_PATH = resolve(DATA_ROOT, 'master-resume-state.json');
 const TRACKER_PATH = profileLocalPath(envValue('SUITOR_TRACKER_PATH', '', resolve(PROFILE_ROOT, 'Applications Tracker.md')), 'SUITOR_TRACKER_PATH');
 
+function defaultTrackerMarkdown() {
+  return '# Applications Tracker\n\n## Active Applications\n\n| Company | Role | Status | Date Submitted | Score | Notes |\n|---|---|---:|---:|---:|---|\n';
+}
+
 migrateRuntimeIfNeeded(LEGACY_DATA_ROOT, DATA_ROOT);
 mkdirSync(DATA_ROOT, { recursive: true });
 mkdirSync(UPLOAD_ROOT, { recursive: true });
@@ -1313,7 +1317,7 @@ function syncJobDbFromFiles() {
 }
 
 function upsertSubmittedApplication({ company, role, score, dateSubmitted, materialsPath, notes, source, compensation, location }) {
-  const markdown = existsSync(TRACKER_PATH) ? readFileSync(TRACKER_PATH, 'utf-8') : '# Applications Tracker\n\n## Active Applications\n\n| Company | Role | Status | Date Submitted | Score | Notes |\n|---|---|---:|---:|---:|---|\n';
+  const markdown = existsSync(TRACKER_PATH) ? readFileSync(TRACKER_PATH, 'utf-8') : defaultTrackerMarkdown();
   const companyKey = normalizeTrackerMatch(company);
   const roleKey = normalizeTrackerMatch(role);
   const scoreText = score == null || score === '' ? 'TBD' : String(score).replace(/\/100$/, '');
@@ -1413,7 +1417,7 @@ function upsertRejectedApplication({ company, role, score, dateRejected, notes, 
 }
 
 function upsertApplicationStage({ company, role, status, score, interviewAt, materialsPath, notes, source, compensation, location }) {
-  const markdown = existsSync(TRACKER_PATH) ? readFileSync(TRACKER_PATH, 'utf-8') : '# Applications Tracker\n\n## Active Applications\n\n| Company | Role | Status | Date Submitted | Score | Notes |\n|---|---|---:|---:|---:|---|\n';
+  const markdown = existsSync(TRACKER_PATH) ? readFileSync(TRACKER_PATH, 'utf-8') : defaultTrackerMarkdown();
   const companyKey = normalizeTrackerMatch(company);
   const roleKey = normalizeTrackerMatch(role);
   const finalStatus = String(status || 'screen_scheduled').trim();
@@ -3526,6 +3530,7 @@ async function handleApi(req, res, pathname) {
   }
 
   if (pathname === '/api/tracker' && req.method === 'GET') {
+    if (!existsSync(TRACKER_PATH)) writeTextAtomic(TRACKER_PATH, defaultTrackerMarkdown());
     return send(res, 200, { path: TRACKER_PATH, markdown: readFileSync(TRACKER_PATH, 'utf-8') });
   }
 
@@ -3536,7 +3541,7 @@ async function handleApi(req, res, pathname) {
     const backupDir = resolve(DATA_ROOT, 'tracker-backups');
     mkdirSync(backupDir, { recursive: true });
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    copyFileSync(TRACKER_PATH, resolve(backupDir, `Applications Tracker - ${CANDIDATE_NAME}.${stamp}.md`));
+    if (existsSync(TRACKER_PATH)) copyFileSync(TRACKER_PATH, resolve(backupDir, `Applications Tracker - ${CANDIDATE_NAME}.${stamp}.md`));
     writeTextAtomic(TRACKER_PATH, markdown);
     try {
       importTrackerIntoDb(jobDb());
