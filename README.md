@@ -32,7 +32,13 @@ npm run setup
 npm start
 ```
 
-Open [http://127.0.0.1:8787](http://127.0.0.1:8787), unlock with the token printed in the terminal token file, and finish the wizard.
+Open [http://127.0.0.1:8787](http://127.0.0.1:8787), unlock with the token in `<profile root>/.suitor-runtime/local.app-token`, and finish the wizard.
+
+## Screenshots
+
+![Suitor onboarding wizard](docs/assets/onboarding-wizard.png)
+
+![Suitor dashboard](docs/assets/dashboard.png)
 
 ## First Run
 
