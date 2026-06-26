@@ -6,6 +6,47 @@
 - Git
 - OpenAI Codex CLI or Anthropic Claude Code CLI
 
+## Windows
+
+PowerShell:
+
+```powershell
+winget install OpenJS.NodeJS.LTS
+git clone https://github.com/Bizmaniz/suitor.git
+cd suitor
+npm install
+npm run setup
+npm start
+```
+
+To set a temporary override:
+
+```powershell
+$env:SUITOR_PORT="8788"; npm start
+```
+
+## macOS And Linux
+
+Use your package manager or `nvm` to install Node 22 or newer. With `nvm`:
+
+```bash
+nvm install 22
+nvm use 22
+git clone https://github.com/Bizmaniz/suitor.git
+cd suitor
+npm install
+npm run setup
+npm start
+```
+
+To set a temporary override:
+
+```bash
+SUITOR_PORT=8788 npm start
+```
+
+On headless Linux, do not enable LinkedIn browser scanning unless a desktop session or suitable browser display is available. API/feed providers and RSS scans work without a GUI.
+
 Install dependencies:
 
 ```bash
@@ -33,6 +74,28 @@ npm start
 ```
 
 Open `http://127.0.0.1:8787`, unlock with the generated token from `<profile root>/.suitor-runtime/local.app-token`, and finish onboarding.
+
+## POSIX Smoke Checklist For Maintainers
+
+Before a release, run this on macOS or Linux:
+
+```bash
+node --version
+npm ci
+npm run check:clean
+npm run test:regression
+tmp_profile="$(mktemp -d)"
+SUITOR_CONFIG_DIR="$(mktemp -d)" SUITOR_PROFILE_ROOT="$tmp_profile" SUITOR_PORT=8789 npm start
+```
+
+In another terminal:
+
+```bash
+test -f "$tmp_profile/.suitor-runtime/local.app-token"
+SUITOR_PROFILE_ROOT="$tmp_profile" npm run scan -- --dry-run --no-websearch
+```
+
+Stop the server, then remove the temporary profile directory.
 
 ## CLI Authentication
 
