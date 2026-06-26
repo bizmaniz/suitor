@@ -254,6 +254,10 @@ try {
   assert(/screen_scheduled/.test(stageUpdate.body.trackerMarkdown), 'stage update should persist the new status', stageUpdate.body.trackerMarkdown);
   assert(/Interview scheduled for Wednesday, June 3, 2026 at 1:30 PM ET\./.test(stageUpdate.body.trackerMarkdown), 'stage update should persist interview notes', stageUpdate.body.trackerMarkdown);
   assert(stageUpdate.body.scanState.decisions.some(item => item.decision === 'screen_scheduled' && /Product\.AI/i.test(item.company)), 'stage update should add suppressive scan decision', JSON.stringify(stageUpdate.body.scanState));
+  const calendarExport = await api(token, '/api/calendar/interviews.ics');
+  assert(calendarExport.res.status === 200, 'calendar export should respond after interview scheduling', `HTTP ${calendarExport.res.status}`);
+  assert(/BEGIN:VCALENDAR/.test(calendarExport.body), 'calendar export should be ICS formatted', calendarExport.body);
+  assert(/Product\.AI/.test(calendarExport.body) && /Chief of Staff to the CEO/.test(calendarExport.body), 'calendar export should include scheduled interview context', calendarExport.body);
 
   const reopened = await postJson(token, '/api/application-stage-update', {
     company: 'PandaDoc',

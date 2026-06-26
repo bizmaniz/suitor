@@ -627,6 +627,8 @@ function ensureJobDbSchema(db) {
     CREATE TABLE IF NOT EXISTS interviews (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       application_id INTEGER,
+      company TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT '',
       round_type TEXT NOT NULL DEFAULT '',
       interview_at TEXT NOT NULL DEFAULT '',
       interviewers TEXT NOT NULL DEFAULT '',
@@ -659,6 +661,8 @@ function ensureJobDbSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id, interview_at);
     CREATE INDEX IF NOT EXISTS idx_contacts_application ON contacts(application_id);
   `);
+  try { db.prepare('ALTER TABLE interviews ADD COLUMN company TEXT NOT NULL DEFAULT ""').run(); } catch {}
+  try { db.prepare('ALTER TABLE interviews ADD COLUMN role TEXT NOT NULL DEFAULT ""').run(); } catch {}
   db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', '2');
 }
 
@@ -669,6 +673,55 @@ function dbText(value = '') {
 function csvCell(value = '') {
   const text = String(value ?? '');
   return /[",\n\r]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+}
+
+function icsText(value = '') {
+  return String(value ?? '')
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/,/g, '\\,')
+    .replace(/;/g, '\\;');
+}
+
+function icsDate(value = '') {
+  const date = new Date(value || Date.now());
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+}
+
+function interviewCalendarIcs() {
+  const rows = jobDb().prepare(`
+    SELECT interviews.*,
+      COALESCE(NULLIF(interviews.company, ''), applications.company, '') AS display_company,
+      COALESCE(NULLIF(interviews.role, ''), applications.role, '') AS display_role
+    FROM interviews
+    LEFT JOIN applications ON applications.id = interviews.application_id
+    ORDER BY interviews.interview_at ASC, interviews.id ASC
+  `).all();
+  const lines = [
+    'BEGIN:VCALENDAR',
+    'VERSION:2.0',
+    'PRODID:-//Suitor//Interview Calendar//EN',
+    'CALSCALE:GREGORIAN',
+  ];
+  for (const row of rows) {
+    const start = icsDate(row.interview_at);
+    if (!start) continue;
+    const endDate = new Date(row.interview_at);
+    endDate.setMinutes(endDate.getMinutes() + 45);
+    lines.push(
+      'BEGIN:VEVENT',
+      `UID:suitor-interview-${row.id}@local`,
+      `DTSTAMP:${icsDate(row.created_at || new Date().toISOString())}`,
+      `DTSTART:${start}`,
+      `DTEND:${icsDate(endDate.toISOString())}`,
+      `SUMMARY:${icsText([row.round_type || 'Interview', row.display_company, row.display_role].filter(Boolean).join(' - '))}`,
+      `DESCRIPTION:${icsText(row.prep_notes || '')}`,
+      'END:VEVENT',
+    );
+  }
+  lines.push('END:VCALENDAR');
+  return lines.join('\r\n') + '\r\n';
 }
 
 function targetCompanySlug(value = '') {
@@ -971,9 +1024,9 @@ function upsertInterviewEvent({ company, role, interviewAt = '', roundType = 'sc
   if (!applicationId) return;
   const now = new Date().toISOString();
   jobDb().prepare(`
-    INSERT INTO interviews(application_id, round_type, interview_at, prep_notes, outcome, created_at, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(applicationId, dbText(roundType), dbText(interviewAt), dbText(notes), dbText(outcome), now, now);
+    INSERT INTO interviews(application_id, company, role, round_type, interview_at, prep_notes, outcome, created_at, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(applicationId, dbText(company), dbText(role), dbText(roundType), dbText(interviewAt), dbText(notes), dbText(outcome), now, now);
 }
 
 function dbApplicationToCard(row = {}) {
@@ -3589,7 +3642,7 @@ async function handleApi(req, res, pathname) {
       notes: body.notes || body.reason || 'Stage updated.',
       payload: { source, compensation, location, materialsPath, score: body.score ?? null },
     });
-    if (/\b(screen|interview|scheduled)\b/i.test(finalStatus)) {
+    if (/(screen|interview|scheduled)/i.test(finalStatus)) {
       upsertInterviewEvent({
         company: finalCompany,
         role: finalRole,
@@ -3630,6 +3683,10 @@ async function handleApi(req, res, pathname) {
     const header = ['company', 'role', 'status', 'section', 'date_found', 'date_submitted', 'date_rejected', 'compensation', 'location', 'source', 'notes', 'next_action'];
     const csv = [header.join(','), ...rows.map(row => header.map(key => csvCell(row[key])).join(','))].join('\n') + '\n';
     return send(res, 200, csv, 'text/csv; charset=utf-8');
+  }
+
+  if (pathname === '/api/calendar/interviews.ics' && req.method === 'GET') {
+    return send(res, 200, interviewCalendarIcs(), 'text/calendar; charset=utf-8');
   }
 
   if (pathname === '/api/backup' && req.method === 'POST') {
