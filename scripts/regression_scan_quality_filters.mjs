@@ -53,6 +53,10 @@ assert.doesNotMatch(websearchSource, /\.endsWith\(['"]duckduckgo\.com['"]\)/, 'D
 assert.doesNotMatch(websearchSource, /duckduckgo\\\.com\$/, 'blocked search hosts should not use suffix regexes that match attacker-controlled hostnames');
 assert.equal(htmlToPlainText('<p>Director&nbsp;&amp;&nbsp;Ops</p>'), 'Director & Ops');
 assert.equal(htmlToPlainText('&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;'), '&lt;script&gt;alert(1)&lt;/script&gt;');
+assert.equal(htmlToPlainText('<script>x</script><div>Visible</div>'), 'Visible');
+assert.equal(htmlToPlainText('<style>x</style><div>Visible</div>'), 'Visible');
+assert.equal(htmlToPlainText('<div>Before</div><script>x</script><div>After</div>'), 'Before After');
+assert.equal(htmlToPlainText('<script>if (a < b) { alert(a); }</script><div>After</div>'), 'After');
 
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-scan-quality-'));
 try {

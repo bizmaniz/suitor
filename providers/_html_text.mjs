@@ -33,6 +33,15 @@ export function stripHtmlTags(value = '') {
 
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
+    if (dropping && !inTag) {
+      const closing = `</${dropping}>`;
+      if (text.slice(i, i + closing.length).toLowerCase() === closing) {
+        i += closing.length - 1;
+        dropping = '';
+        continue;
+      }
+      continue;
+    }
     if (!inTag && ch === '<') {
       const rest = text.slice(i + 1).toLowerCase();
       if (rest.startsWith('script')) dropping = 'script';
@@ -44,14 +53,6 @@ export function stripHtmlTags(value = '') {
     }
     if (inTag) {
       if (ch === '>') inTag = false;
-      continue;
-    }
-    if (dropping) {
-      const closing = `</${dropping}>`;
-      if (text.slice(i, i + closing.length).toLowerCase() === closing) {
-        i += closing.length - 1;
-        dropping = '';
-      }
       continue;
     }
     out += ch;
