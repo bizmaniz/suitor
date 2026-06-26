@@ -114,7 +114,7 @@ function jobsFromMarkdown(markdown, entry, hosts) {
 
 async function fetchViaJina(ctx, query) {
   const target = `${DDG_HTML}?q=${encodeURIComponent(query)}`;
-  const url = `https://r.jina.ai/http://r.jina.ai/http://${target}`;
+  const url = `https://r.jina.ai/http://${target.replace(/^https?:\/\//, '')}`;
   return await ctx.fetchText(url, { headers: { accept: 'text/markdown' }, timeoutMs: 20_000 });
 }
 

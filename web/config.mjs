@@ -45,7 +45,7 @@ function initialConfig() {
       envProfileRootSet ? resolve(profileRoot, 'Assessments') : (fileConfig.assessmentsRoot || resolve(profileRoot, 'Assessments')),
     )),
     host: env('SUITOR_HOST', fileConfig.host || '127.0.0.1'),
-    port: Number(env('SUITOR_PORT', fileConfig.port || 8787)),
+    port: Number(env('SUITOR_PORT', fileConfig.port ?? 8787)),
     candidateName,
     candidateFirst: first,
     candidateInitials: env('SUITOR_CANDIDATE_INITIALS', fileConfig.candidateInitials || initials(candidateName)),

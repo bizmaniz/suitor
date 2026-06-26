@@ -33,6 +33,12 @@ function assertIsolationFailure(result, label) {
   assert.match(output, /must stay under SUITOR_PROFILE_ROOT/, `${label} should explain the profile isolation failure\n${output}`);
 }
 
+function assertPortFailure(result) {
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  assert.notEqual(result.status, 0, 'server should reject SUITOR_PORT=0 instead of silently falling back');
+  assert.match(output, /ephemeral port 0 is not supported/, output);
+}
+
 try {
   assertIsolationFailure(runNode(['web/server.mjs'], {
     SUITOR_RUNTIME_ROOT: resolve(outsideRoot, 'runtime'),
@@ -57,6 +63,10 @@ try {
   assertIsolationFailure(runNode(['scripts/verified_scan.mjs'], {
     SUITOR_ASSESSMENTS_ROOT: resolve(outsideRoot, 'Assessments'),
   }), 'verified scan assessments root guard');
+
+  assertPortFailure(runNode(['web/server.mjs'], {
+    SUITOR_PORT: '0',
+  }));
 
   console.log('profile guardrail regression passed');
 } finally {

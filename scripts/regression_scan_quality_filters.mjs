@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 
 import assert from 'assert/strict';
+import { spawnSync } from 'child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join, resolve } from 'path';
 import { isQuickReject, isSearchResultNoise } from './scan_quality_filters.mjs';
 
 assert.equal(isQuickReject({
@@ -41,5 +45,44 @@ assert.equal(isSearchResultNoise({
   title: 'Chief of Staff to the CEO',
   url: 'https://jobs.ashbyhq.com/example/123',
 }), false, 'real ATS job URLs should not be treated as search-result noise');
+
+const websearchSource = readFileSync(resolve('providers', 'websearch.mjs'), 'utf-8');
+assert.doesNotMatch(websearchSource, /r\.jina\.ai\/http:\/\/r\.jina\.ai/i, 'Jina fallback should use a single reader prefix');
+
+const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-scan-quality-'));
+try {
+  const portalsPath = join(profileRoot, 'portals.yml');
+  writeFileSync(portalsPath, [
+    'providers:',
+    '  websearch: true',
+    'tracked_companies:',
+    '  - name: "Explicit Websearch Target"',
+    '    scan_method: websearch',
+    '    scan_query: "site:example.com jobs"',
+    '    enabled: true',
+    'search_queries:',
+    '  - name: "Search Query Target"',
+    '    query: "site:example.com jobs"',
+    '    enabled: true',
+  ].join('\n') + '\n', 'utf-8');
+  const run = spawnSync(process.execPath, ['scan.mjs', '--dry-run', '--json', '--no-websearch'], {
+    cwd: resolve('.'),
+    env: {
+      ...process.env,
+      SUITOR_PROFILE_ROOT: profileRoot,
+      SUITOR_PORTALS_PATH: portalsPath,
+      SUITOR_RUNTIME_ROOT: join(profileRoot, '.suitor-runtime'),
+      SUITOR_PERSON_KEY: 'test',
+    },
+    encoding: 'utf-8',
+    timeout: 20000,
+  });
+  assert.equal(run.status, 0, `${run.stdout}\n${run.stderr}`);
+  const payload = JSON.parse(run.stdout);
+  assert.equal(payload.companiesScanned, 0, JSON.stringify(payload));
+  assert.deepEqual(Object.keys(payload.bySource), [], JSON.stringify(payload.bySource));
+} finally {
+  rmSync(profileRoot, { recursive: true, force: true });
+}
 
 console.log('scan quality filter regression passed');

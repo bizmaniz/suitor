@@ -410,8 +410,14 @@ async function main() {
   }
 
   const config = parseYaml(readFileSync(PORTALS_PATH, 'utf-8'));
+  const trackedCompanies = (config.tracked_companies || [])
+    .filter(company => !(noWebsearch && (
+      company.scan_method === 'websearch'
+      || company.provider === 'websearch'
+      || company.scan_query
+    )));
   const companies = [
-    ...(config.tracked_companies || []),
+    ...trackedCompanies,
     ...builtinEntries(config),
     ...rssEntries(config),
     ...museEntries(config),
