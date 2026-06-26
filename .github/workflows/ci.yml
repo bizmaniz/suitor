@@ -14,7 +14,11 @@ jobs:
         with:
           node-version: "22"
           cache: npm
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.x"
       - run: npm ci
+      - run: npx playwright install --with-deps chromium
       - run: npm run check:clean
       - run: npm run test:regression
       - run: npm audit --audit-level=high

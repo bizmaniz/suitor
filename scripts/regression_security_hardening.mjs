@@ -38,6 +38,10 @@ function assertAgentSandboxSource() {
   assert.doesNotMatch(claudeBlock, /cwd: APP_ROOT/);
   assert.match(codexBlock, /'--sandbox', 'read-only'/);
   assert.match(codexBlock, /spawn\(resolveCodexBin\(\), args, \{ cwd: PROFILE_ROOT/);
+  assert.match(source, /function resolvePythonBin\(\)/);
+  assert.match(source, /for \(const bin of \['python3', 'python'\]\)/);
+  assert.doesNotMatch(source, /spawn\('python'/);
+  assert.doesNotMatch(source, /raw\.replaceAll\('\/', '\\\\'\)/);
 }
 
 async function assertUploadPathSafety() {

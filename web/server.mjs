@@ -5,7 +5,7 @@ import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
 import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, copyFileSync, rmSync, renameSync } from 'fs';
 import { networkInterfaces } from 'os';
-import { extname, join, resolve, relative, basename } from 'path';
+import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
@@ -132,6 +132,25 @@ function localClaudeEnv() {
     OTEL_SDK_DISABLED: 'true',
     DO_NOT_TRACK: '1',
   };
+}
+
+let pythonBinCache;
+function resolvePythonBin() {
+  if (pythonBinCache !== undefined) return pythonBinCache;
+  for (const bin of ['python3', 'python']) {
+    const probe = spawnSync(bin, ['--version'], {
+      encoding: 'utf-8',
+      shell: false,
+      timeout: 5000,
+      windowsHide: true,
+    });
+    if (!probe.error && probe.status === 0) {
+      pythonBinCache = bin;
+      return pythonBinCache;
+    }
+  }
+  pythonBinCache = '';
+  return pythonBinCache;
 }
 
 const docs = {
@@ -2040,10 +2059,9 @@ function decodeDownloadPath(encoded) {
 function decodeLooseDownloadPath(rawPath) {
   const raw = String(rawPath || '').trim();
   if (!raw) return null;
-  const normalized = raw.replaceAll('/', '\\');
-  const candidate = /^[A-Za-z]:[\\/]/.test(raw)
+  const candidate = /^[A-Za-z]:[\\/]/.test(raw) || isAbsolute(raw)
     ? resolve(raw)
-    : resolve(PROFILE_ROOT, normalized);
+    : resolve(PROFILE_ROOT, raw);
   for (const root of allowedDownloadRoots) {
     if (!isUnder(candidate, root)) continue;
     const ext = extname(candidate).toLowerCase();
@@ -4105,9 +4123,11 @@ async function handleApi(req, res, pathname) {
 
 async function extractPdfText(filePath) {
   const outPath = `${filePath}.txt`;
+  const pythonBin = resolvePythonBin();
+  if (!pythonBin) return '';
   const code = "import sys\nfrom pathlib import Path\nfrom pypdf import PdfReader\np = Path(sys.argv[1])\nout = Path(sys.argv[2])\ntxt = '\\n'.join(page.extract_text() or '' for page in PdfReader(str(p)).pages)\nout.write_text(txt, encoding='utf-8')\n";
   await new Promise(resolvePromise => {
-    const child = spawn('python', ['-c', code, filePath, outPath], { stdio: 'ignore' });
+    const child = spawn(pythonBin, ['-c', code, filePath, outPath], { stdio: 'ignore' });
     child.on('close', () => resolvePromise());
     child.on('error', () => resolvePromise());
   });
@@ -4116,9 +4136,11 @@ async function extractPdfText(filePath) {
 
 async function extractDocxText(filePath) {
   const outPath = `${filePath}.txt`;
+  const pythonBin = resolvePythonBin();
+  if (!pythonBin) return '';
   const code = "import sys\nfrom pathlib import Path\ntry:\n    from docx import Document\n    p = Path(sys.argv[1])\n    out = Path(sys.argv[2])\n    doc = Document(str(p))\n    txt = '\\n'.join(paragraph.text for paragraph in doc.paragraphs if paragraph.text)\n    out.write_text(txt, encoding='utf-8')\nexcept Exception:\n    Path(sys.argv[2]).write_text('', encoding='utf-8')\n";
   await new Promise(resolvePromise => {
-    const child = spawn('python', ['-c', code, filePath, outPath], { stdio: 'ignore' });
+    const child = spawn(pythonBin, ['-c', code, filePath, outPath], { stdio: 'ignore' });
     child.on('close', () => resolvePromise());
     child.on('error', () => resolvePromise());
   });
@@ -4334,7 +4356,16 @@ function streamTailorPackage(payload, res) {
     const inputPath = resolve(DATA_ROOT, `tailor-${stamp}.json`);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
     appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
-    const child = spawn('python', [resolve(APP_ROOT, 'scripts', 'generate_tailored_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const pythonBin = resolvePythonBin();
+    if (!pythonBin) {
+      const message = 'Tailoring could not start because Python is not available. Install python3 or python and try again.';
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message });
+      res.write(`${message}\n[process exited with code 1]\n`);
+      res.end();
+      try { if (existsSync(inputPath)) rmSync(inputPath, { force: true }); } catch {}
+      return;
+    }
+    const child = spawn(pythonBin, [resolve(APP_ROOT, 'scripts', 'generate_tailored_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => {
@@ -4469,7 +4500,16 @@ function streamProfileTailorPackage(payload, res) {
   });
   appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${company} ${role}` });
 
-  const child = spawn('python', [resolve(APP_ROOT, 'scripts', 'generate_profile_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const pythonBin = resolvePythonBin();
+  if (!pythonBin) {
+    const message = 'Package generation could not start because Python is not available. Install python3 or python and try again.';
+    appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message });
+    res.write(`${message}\n\n[process exited with code 1]\n`);
+    res.end();
+    try { if (existsSync(inputPath)) rmSync(inputPath, { force: true }); } catch {}
+    return;
+  }
+  const child = spawn(pythonBin, [resolve(APP_ROOT, 'scripts', 'generate_profile_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write([
