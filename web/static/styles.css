@@ -2099,6 +2099,16 @@ input:focus-visible {
   color: var(--muted, #65717d);
 }
 
+.intake-expectation {
+  border: 1px solid var(--accent-border, #9ee8dd);
+  border-radius: 8px;
+  background: var(--accent-soft, #ecfffb);
+  padding: 10px 12px;
+  color: var(--text, #17202a);
+  font-size: 14px;
+  line-height: 1.45;
+}
+
 .wizard-checks span,
 .segmented label,
 .onboarding-nudge {

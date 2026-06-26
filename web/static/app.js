@@ -2110,7 +2110,8 @@ async function showOnboardingWizard(force = false) {
       </section>
       <section class="wizard-section intake-chat">
         <h3>Recruiter interview</h3>
-        <p class="helper-text">${escapeHtml(cfg.assistantName || state.meta.assistantName)} asks direct, evidence-based questions. Save each stage as you go; Tier 1 unlocks scanning before the full persona is done.</p>
+        <div class="intake-expectation">This is thorough by design. Answer the essentials in a few minutes to start scanning, then deepen the profile anytime. The fuller picture usually takes 15-20 minutes total, auto-saves as you go, and makes matches sharper.</div>
+        <p class="helper-text">${escapeHtml(cfg.assistantName || state.meta.assistantName)} asks direct, evidence-based questions. You can pause and resume; honest detail improves the results.</p>
         <select id="intakeStageSelect">
           ${stages.map(stage => `<option value="${escapeHtml(stage.key)}" ${stage.key === activeStage ? 'selected' : ''}>${escapeHtml(stage.title)}</option>`).join('')}
         </select>
