@@ -153,6 +153,64 @@ function resolvePythonBin() {
   return pythonBinCache;
 }
 
+const EXTRACTION_TIMEOUT_MS = Number(envValue('SUITOR_EXTRACTION_TIMEOUT_MS', '', '30000'));
+const MAX_PDF_BYTES = Number(envValue('SUITOR_MAX_PDF_BYTES', '', String(15 * 1024 * 1024)));
+const MAX_DOCX_BYTES = Number(envValue('SUITOR_MAX_DOCX_BYTES', '', String(10 * 1024 * 1024)));
+const MAX_PDF_PAGES = Number(envValue('SUITOR_MAX_PDF_PAGES', '', '80'));
+
+class ExtractionError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ExtractionError';
+    this.statusCode = 422;
+  }
+}
+
+function assertExtractionSize(filePath, ext) {
+  const size = statSync(filePath).size;
+  const max = ext === '.pdf' ? MAX_PDF_BYTES : MAX_DOCX_BYTES;
+  if (Number.isFinite(max) && max > 0 && size > max) {
+    throw new ExtractionError(`${ext.toUpperCase().slice(1)} extraction skipped because the file is too large (${Math.ceil(size / 1024 / 1024)} MB). Max allowed is ${Math.floor(max / 1024 / 1024)} MB.`);
+  }
+}
+
+function extractionTimeoutMessage(ext) {
+  return `${ext.toUpperCase().slice(1)} extraction timed out after ${Math.ceil(EXTRACTION_TIMEOUT_MS / 1000)} seconds. Try a smaller or cleaner file.`;
+}
+
+function runPythonExtraction(args, ext) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const pythonBin = resolvePythonBin();
+    if (!pythonBin) {
+      rejectPromise(new ExtractionError('Python is not available for document text extraction. Install python3 or python and try again.'));
+      return;
+    }
+    let stderr = '';
+    let settled = false;
+    const child = spawn(pythonBin, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill('SIGKILL'); } catch {}
+      rejectPromise(new ExtractionError(extractionTimeoutMessage(ext)));
+    }, EXTRACTION_TIMEOUT_MS);
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', err => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      rejectPromise(new ExtractionError(`Document extraction could not start: ${err.message}`));
+    });
+    child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) resolvePromise();
+      else rejectPromise(new ExtractionError(`Document extraction failed cleanly: ${(stderr || `exit code ${code}`).trim().slice(0, 300)}`));
+    });
+  });
+}
+
 const docs = {
   profile: resolve(envValue('SUITOR_PROFILE_MD', '', resolve(PROFILE_ROOT, 'Candidate Search Profile.md'))),
   scanPrompt: resolve(envValue('SUITOR_SCAN_PROMPT', '', resolve(PROFILE_ROOT, 'Job Scan Prompt.md'))),
@@ -4519,27 +4577,17 @@ async function handleApi(req, res, pathname) {
 
 async function extractPdfText(filePath) {
   const outPath = `${filePath}.txt`;
-  const pythonBin = resolvePythonBin();
-  if (!pythonBin) return '';
-  const code = "import sys\nfrom pathlib import Path\nfrom pypdf import PdfReader\np = Path(sys.argv[1])\nout = Path(sys.argv[2])\ntxt = '\\n'.join(page.extract_text() or '' for page in PdfReader(str(p)).pages)\nout.write_text(txt, encoding='utf-8')\n";
-  await new Promise(resolvePromise => {
-    const child = spawn(pythonBin, ['-c', code, filePath, outPath], { stdio: 'ignore' });
-    child.on('close', () => resolvePromise());
-    child.on('error', () => resolvePromise());
-  });
+  assertExtractionSize(filePath, '.pdf');
+  const code = "import sys\nfrom pathlib import Path\nfrom pypdf import PdfReader\np = Path(sys.argv[1])\nout = Path(sys.argv[2])\nmax_pages = int(sys.argv[3])\nreader = PdfReader(str(p))\nif len(reader.pages) > max_pages:\n    raise SystemExit(f'PDF has {len(reader.pages)} pages; max allowed is {max_pages}')\ntxt = '\\n'.join(page.extract_text() or '' for page in reader.pages)\nout.write_text(txt, encoding='utf-8')\n";
+  await runPythonExtraction(['-c', code, filePath, outPath, String(MAX_PDF_PAGES)], '.pdf');
   return existsSync(outPath) ? outPath : '';
 }
 
 async function extractDocxText(filePath) {
   const outPath = `${filePath}.txt`;
-  const pythonBin = resolvePythonBin();
-  if (!pythonBin) return '';
-  const code = "import sys\nfrom pathlib import Path\ntry:\n    from docx import Document\n    p = Path(sys.argv[1])\n    out = Path(sys.argv[2])\n    doc = Document(str(p))\n    txt = '\\n'.join(paragraph.text for paragraph in doc.paragraphs if paragraph.text)\n    out.write_text(txt, encoding='utf-8')\nexcept Exception:\n    Path(sys.argv[2]).write_text('', encoding='utf-8')\n";
-  await new Promise(resolvePromise => {
-    const child = spawn(pythonBin, ['-c', code, filePath, outPath], { stdio: 'ignore' });
-    child.on('close', () => resolvePromise());
-    child.on('error', () => resolvePromise());
-  });
+  assertExtractionSize(filePath, '.docx');
+  const code = "import sys\nfrom pathlib import Path\nfrom docx import Document\np = Path(sys.argv[1])\nout = Path(sys.argv[2])\ndoc = Document(str(p))\ntxt = '\\n'.join(paragraph.text for paragraph in doc.paragraphs if paragraph.text)\nout.write_text(txt, encoding='utf-8')\n";
+  await runPythonExtraction(['-c', code, filePath, outPath], '.docx');
   return existsSync(outPath) && statSync(outPath).size > 0 ? outPath : '';
 }
 
@@ -4979,7 +5027,7 @@ const server = createServer(async (req, res) => {
       res.end(`\n\n[stream error] ${err.message}\n`);
       return;
     }
-    send(res, 500, { error: err.message });
+    send(res, err.statusCode || 500, { error: err.message });
   }
 });
 

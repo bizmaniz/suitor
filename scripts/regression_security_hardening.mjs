@@ -63,6 +63,8 @@ async function assertUploadPathSafety() {
       SUITOR_CANDIDATE_NAME: 'Security Candidate',
       SUITOR_CANDIDATE_FIRST: 'Security',
       SUITOR_ASSISTANT_NAME: 'Assistant',
+      SUITOR_MAX_PDF_BYTES: '1024',
+      SUITOR_EXTRACTION_TIMEOUT_MS: '5000',
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -100,10 +102,21 @@ async function assertUploadPathSafety() {
         dataUrl: `data:application/pdf;base64,${Buffer.from('%PDF-1.4\nnot a real pdf\n').toString('base64')}`,
       },
     });
-    assert.equal(pdfUpload.res.status, 200, JSON.stringify(pdfUpload.body));
-    assert.ok(isUnder(resolve(pdfUpload.body.path), resolve(runtimeRoot, 'uploads')), `pdf upload escaped root: ${pdfUpload.body.path}`);
+    assert.equal(pdfUpload.res.status, 422, JSON.stringify(pdfUpload.body));
+    assert.match(pdfUpload.body.error, /extraction failed cleanly|Python is not available|No module named/i);
     assert.ok(!existsSync(outsideMarker), 'malicious pdf filename executed injected Python');
-    assert.doesNotMatch(pdfUpload.body.name, /'/, 'stored upload name should be sanitized');
+
+    const oversizedUpload = await postJson({
+      port,
+      token,
+      path: '/api/upload',
+      value: {
+        name: 'oversized.pdf',
+        dataUrl: `data:application/pdf;base64,${Buffer.alloc(2048, 0x25).toString('base64')}`,
+      },
+    });
+    assert.equal(oversizedUpload.res.status, 422, JSON.stringify(oversizedUpload.body));
+    assert.match(oversizedUpload.body.error, /too large/i);
 
     const onboarding = await postJson({
       port,
