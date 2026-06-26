@@ -4,6 +4,7 @@ node_modules/
 !.env.example
 .suitor-runtime/
 .suitor-profile/
+.suitor-*-profile/
 *.sqlite
 *.sqlite-*
 *.db
