@@ -1,5 +1,5 @@
 const state = {
-  token: localStorage.getItem('suitorToken') || localStorage.getItem('suitorToken') || '',
+  authenticated: false,
   activeView: localStorage.getItem('activeView') || 'applications',
   attachments: [],
   trackerCards: [],
@@ -22,10 +22,7 @@ const state = {
   onboarding: null,
 };
 
-if (!localStorage.getItem('suitorToken') && localStorage.getItem('suitorToken')) {
-  localStorage.setItem('suitorToken', localStorage.getItem('suitorToken'));
-  localStorage.removeItem('suitorToken');
-}
+localStorage.removeItem('suitorToken');
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -108,18 +105,20 @@ const els = {
 };
 
 function headers(extra = {}) {
-  return { ...extra, 'X-Suitor-App-Token': state.token };
+  return { ...extra };
 }
 
 async function api(path, options = {}) {
   const res = await fetch(path, {
     ...options,
+    credentials: 'same-origin',
     headers: headers({
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
       ...(options.headers || {}),
     }),
   });
   if (res.status === 401) {
+    state.authenticated = false;
     showLogin();
     throw new Error('Unauthorized');
   }
@@ -338,7 +337,7 @@ function localLinkedInJobsUrl() {
 async function loadBrowserPreview(url) {
   if (!els.browserPreview || !url) return;
   try {
-    const res = await fetch(url, { headers: headers() });
+    const res = await fetch(url, { credentials: 'same-origin', headers: headers() });
     if (!res.ok) throw new Error(`preview ${res.status}`);
     const blob = await res.blob();
     if (els.browserPreview.dataset.objectUrl) URL.revokeObjectURL(els.browserPreview.dataset.objectUrl);
@@ -429,7 +428,7 @@ function renderConnections(connections = {}) {
 }
 
 async function refreshBrowserStatus() {
-  if (!state.token || !els.browserPanel) return null;
+  if (!state.authenticated || !els.browserPanel) return null;
   try {
     const browser = await api('/api/browser/status');
     renderBrowserStatus(browser);
@@ -2202,6 +2201,7 @@ async function showOnboardingWizard(force = false) {
 async function bootstrap() {
   try {
     const data = await api('/api/bootstrap');
+    state.authenticated = true;
     applyMeta(data);
     state.onboarding = data.onboarding || null;
     els.authStatus.textContent = 'Unlocked';
@@ -2227,7 +2227,7 @@ async function bootstrap() {
     await showOnboardingWizard(false);
     await refreshBrowserStatus();
   } catch {
-    if (!state.token) showLogin();
+    if (!state.authenticated) showLogin();
   }
 }
 
@@ -2237,10 +2237,12 @@ async function streamPost(path, body, target) {
   try {
     const res = await fetch(path, {
       method: 'POST',
+      credentials: 'same-origin',
       headers: headers({ 'Content-Type': 'application/json' }),
       body: JSON.stringify(body),
     });
     if (res.status === 401) {
+      state.authenticated = false;
       showLogin();
       return;
     }
@@ -2464,8 +2466,9 @@ function filenameFromDownloadResponse(res, url) {
 async function downloadWithAuth(url) {
   setBusy(true, 'Downloading');
   try {
-    const res = await fetch(url, { headers: headers() });
+    const res = await fetch(url, { credentials: 'same-origin', headers: headers() });
     if (res.status === 401) {
+      state.authenticated = false;
       showLogin();
       throw new Error(`Enter the LAN password for ${state.meta.candidateFirst}'s Suitor, then try the download again.`);
     }
@@ -2502,6 +2505,7 @@ els.loginForm.addEventListener('submit', async (event) => {
   const token = els.tokenInput.value.trim();
   const res = await fetch('/api/login', {
     method: 'POST',
+    credentials: 'same-origin',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ token }),
   });
@@ -2509,9 +2513,7 @@ els.loginForm.addEventListener('submit', async (event) => {
     els.loginError.textContent = 'Password did not match.';
     return;
   }
-  state.token = token;
-  localStorage.setItem('suitorToken', token);
-  localStorage.removeItem('suitorToken');
+  state.authenticated = true;
   els.loginDialog.close();
   await bootstrap();
 });

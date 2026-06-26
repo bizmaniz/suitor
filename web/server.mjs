@@ -355,6 +355,26 @@ function requireAuth(req, res) {
   return false;
 }
 
+function requestSourceOrigin(req) {
+  const raw = req.headers.origin || req.headers.referer || '';
+  if (!raw) return null;
+  try {
+    return new URL(String(raw)).host;
+  } catch {
+    return '';
+  }
+}
+
+function requireSameOriginForMutation(req, res) {
+  if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method || '')) return true;
+  const sourceHost = requestSourceOrigin(req);
+  if (sourceHost === null) return true;
+  const requestHost = String(req.headers.host || '').toLowerCase();
+  if (sourceHost && requestHost && sourceHost.toLowerCase() === requestHost) return true;
+  send(res, 403, { error: 'Cross-site request rejected. Open Suitor from its own local URL and try again.' });
+  return false;
+}
+
 function safeJoin(root, requestPath) {
   const clean = decodeURIComponent(requestPath.split('?')[0]).replace(/^\/+/, '');
   const full = resolve(root, clean || 'index.html');
@@ -3775,6 +3795,8 @@ function streamSimpleAssistant(userMessage, assistantMessage, res) {
 }
 
 async function handleApi(req, res, pathname) {
+  if (!requireSameOriginForMutation(req, res)) return;
+
   if (pathname === '/api/login' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req) || '{}');
     const presentedHash = Buffer.from(sha256(String(body.token || '')), 'hex');

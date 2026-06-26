@@ -15,10 +15,10 @@ function isUnder(child, parent) {
   return child === parent || (Boolean(rel) && !rel.startsWith('..') && !rel.includes(':'));
 }
 
-async function postJson({ port, token, path, value }) {
+async function postJson({ port, token, path, value, headers = {} }) {
   const res = await fetch(`http://127.0.0.1:${port}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Suitor-App-Token': token },
+    headers: { 'Content-Type': 'application/json', 'X-Suitor-App-Token': token, ...headers },
     body: JSON.stringify(value),
   });
   const body = await res.json().catch(async () => ({ raw: await res.text().catch(() => '') }));
@@ -79,6 +79,25 @@ async function assertUploadPathSafety() {
       child,
       getOutput: () => `${stdout}\n${stderr}`,
     });
+    const foreignOrigin = await postJson({
+      port,
+      token,
+      path: '/api/resume-preview',
+      headers: { Origin: 'https://evil.example' },
+      value: { markdown: 'cross-site update should fail' },
+    });
+    assert.equal(foreignOrigin.res.status, 403, JSON.stringify(foreignOrigin.body));
+    assert.match(foreignOrigin.body.error, /cross-site request rejected/i);
+
+    const sameOrigin = await postJson({
+      port,
+      token,
+      path: '/api/resume-preview',
+      headers: { Origin: `http://127.0.0.1:${port}` },
+      value: { markdown: 'same-origin update should pass' },
+    });
+    assert.equal(sameOrigin.res.status, 200, JSON.stringify(sameOrigin.body));
+
     const txtUpload = await postJson({
       port,
       token,
