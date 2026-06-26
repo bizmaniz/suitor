@@ -34,14 +34,14 @@ function migrateRuntimeIfNeeded(legacyRoot, currentRoot) {
   }
 }
 
-function pathIsSameOrUnder(child, parent) {
+function isUnder(child, parent) {
   const rel = relative(parent, child);
-  return child === parent || (rel && !rel.startsWith('..') && !rel.includes(':'));
+  return child === parent || (Boolean(rel) && !rel.startsWith('..') && !rel.includes(':'));
 }
 
 function profileLocalPath(pathValue, label) {
   const full = resolve(pathValue);
-  if (!pathIsSameOrUnder(full, PROFILE_ROOT)) {
+  if (!isUnder(full, PROFILE_ROOT)) {
     throw new Error(`${label} must stay under SUITOR_PROFILE_ROOT for profile isolation: ${full}`);
   }
   return full;
@@ -275,11 +275,6 @@ function safeJoin(root, requestPath) {
   const full = resolve(root, clean || 'index.html');
   if (!pathIsSameOrUnder(full, root)) return null;
   return full;
-}
-
-function isUnder(child, parent) {
-  const rel = relative(parent, child);
-  return rel && !rel.startsWith('..') && !rel.includes(':');
 }
 
 function normalizeScanKey(value = '') {
@@ -1853,7 +1848,7 @@ function walk(dir, visit) {
 
 function encodeDownloadPath(file) {
   for (const root of allowedDownloadRoots) {
-    if (file === root || isUnder(file, root)) {
+    if (isUnder(file, root)) {
       return `${allowedDownloadRoots.indexOf(root)}:${relative(root, file).replaceAll('\\', '/')}`;
     }
   }
@@ -1865,7 +1860,7 @@ function decodeDownloadPath(encoded) {
   const root = allowedDownloadRoots[Number(rootIndexRaw)];
   if (!root) return null;
   const full = resolve(root, relParts.join(':'));
-  if (!(full === root || isUnder(full, root))) return null;
+  if (!isUnder(full, root)) return null;
   const ext = extname(full).toLowerCase();
   if (!['.pdf', '.docx', '.doc', '.md', '.txt'].includes(ext)) return null;
   if (root === PROFILE_ROOT && !isMasterResumeFile(basename(full))) return null;
@@ -1880,7 +1875,7 @@ function decodeLooseDownloadPath(rawPath) {
     ? resolve(raw)
     : resolve(PROFILE_ROOT, normalized);
   for (const root of allowedDownloadRoots) {
-    if (!(candidate === root || isUnder(candidate, root))) continue;
+    if (!isUnder(candidate, root)) continue;
     const ext = extname(candidate).toLowerCase();
     if (!['.pdf', '.docx', '.doc', '.md', '.txt'].includes(ext)) return null;
     if (root === PROFILE_ROOT && !isMasterResumeFile(basename(candidate))) return null;
