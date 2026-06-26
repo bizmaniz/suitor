@@ -137,6 +137,33 @@ await withJsRenderedJobServer(async url => {
   assert.match(fetchedRecovered.text, /executive cadence/);
 });
 
+const previousAllowLan = process.env.SUITOR_ALLOW_LAN;
+try {
+  process.env.SUITOR_ALLOW_LAN = '1';
+  const blockedDirectFetch = await fetchCandidate({
+    title: 'Chief of Staff to the CEO',
+    company: 'Private Address Example',
+    url: 'https://127.0.0.1/private-job',
+  });
+  assert.equal(blockedDirectFetch.verificationState, 'DEAD');
+  assert.match(blockedDirectFetch.verificationReason, /Blocked private or local URL in LAN mode/i);
+
+  const blockedBrowserRecovery = await browserRecoverJobPage({
+    title: 'Chief of Staff to the CEO',
+    company: 'Metadata Address Example',
+    url: 'https://169.254.169.254/latest/meta-data/',
+  });
+  assert.equal(blockedBrowserRecovery.recovered, false);
+  assert.equal(blockedBrowserRecovery.httpStatus, 'browser-error');
+  assert.match(blockedBrowserRecovery.recoveryReason, /Blocked private or local URL in LAN mode/i);
+} finally {
+  if (previousAllowLan === undefined) {
+    delete process.env.SUITOR_ALLOW_LAN;
+  } else {
+    process.env.SUITOR_ALLOW_LAN = previousAllowLan;
+  }
+}
+
 const failedLinkedIn = classifyFetchFailure({
   offer: { source: 'linkedin-browser', browserSnippet: 'LinkedIn visible role card' },
   error: { name: 'TypeError', message: 'network failed' },

@@ -16,7 +16,9 @@ Use this only on a trusted private network. Suitor does not provide TLS. In LAN 
 SUITOR_ALLOWED_HOSTS="192.168.1.20:8787,suitor.local"
 ```
 
-LAN mode also enables stricter URL-fetch protection for user-controlled RSS feeds, provider URLs, and liveness checks. Suitor blocks private, loopback, link-local, and metadata IP ranges and re-validates redirect targets.
+Set `SUITOR_ALLOWED_HOSTS` when using LAN mode. If it is empty, Suitor starts for compatibility but prints a warning because Host-header checking and DNS-rebinding protection are disabled.
+
+LAN mode also enables stricter URL-fetch protection for user-controlled RSS feeds, provider URLs, verified-scan candidate URLs, browser-recovery navigation, and liveness checks. Suitor blocks private, loopback, link-local, and metadata IP ranges and re-validates redirect targets where it follows redirects itself.
 
 ## Authentication
 

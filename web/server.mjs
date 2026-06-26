@@ -92,6 +92,9 @@ if (LAN_MODE && !config.allowLan) {
 if (LAN_MODE) {
   process.env.SUITOR_STRICT_URL_FETCH = '1';
   console.warn('WARNING: Suitor LAN mode is active. Use only on a trusted local network; this local server does not provide TLS.');
+  if (!config.allowedHosts?.length) {
+    console.warn('WARNING: SUITOR_ALLOWED_HOSTS is empty in LAN mode. Host-header checking and DNS-rebinding protection are disabled; set SUITOR_ALLOWED_HOSTS to trusted local hostnames or host:port values.');
+  }
 }
 const CLAUDE_PERMISSION_MODE = config.llm?.permissionMode || 'default';
 const TOKEN_PATH = resolve(DATA_ROOT, `${PERSON_KEY}.app-token`);

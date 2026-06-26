@@ -32,6 +32,8 @@ Job postings are untrusted content. Suitor tells the assistant to treat scraped 
 
 LAN mode is for trusted private networks only. It requires `SUITOR_HOST=0.0.0.0` or another non-loopback host plus `SUITOR_ALLOW_LAN=1`; Suitor refuses the bind otherwise.
 
-When LAN mode is active, Suitor blocks user-controlled fetches to private, loopback, link-local, and metadata IP ranges and re-checks redirects. This protects RSS feeds, provider URLs, and liveness checks from being used as local-network probes. Keep browser scans small and do not expose Suitor directly to the public internet.
+When LAN mode is active, Suitor blocks user-controlled fetches to private, loopback, link-local, and metadata IP ranges and re-checks redirects. This protects RSS feeds, provider URLs, verified-scan candidate URLs, browser-recovery navigation, and liveness checks from being used as local-network probes. Keep browser scans small and do not expose Suitor directly to the public internet.
+
+Set `SUITOR_ALLOWED_HOSTS` in LAN mode whenever possible, for example `SUITOR_ALLOWED_HOSTS="192.168.1.20:8787,suitor.local"`. If the allowlist is empty, Suitor warns that Host-header checking and DNS-rebinding protection are disabled.
 
 You are responsible for how you use Suitor and for following each platform's terms.

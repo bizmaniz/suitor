@@ -381,11 +381,55 @@ async function assertLanModeUrlSafety() {
   }
 }
 
+async function assertLanHostAllowlistWarning() {
+  const profileRoot = mkdtempSync(join(tmpdir(), 'suitor-lan-warning-profile-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'suitor-lan-warning-config-'));
+  const port = 25500 + Math.floor(Math.random() * 1000);
+  const runtimeRoot = resolve(profileRoot, '.suitor-runtime');
+  const tokenPath = resolve(runtimeRoot, 'lanwarn.app-token');
+  const child = spawn(process.execPath, ['web/server.mjs'], {
+    cwd: APP_ROOT,
+    env: {
+      ...process.env,
+      SUITOR_CONFIG_DIR: configDir,
+      SUITOR_PERSON_KEY: 'lanwarn',
+      SUITOR_PROFILE_ROOT: profileRoot,
+      SUITOR_HOST: '0.0.0.0',
+      SUITOR_ALLOW_LAN: '1',
+      SUITOR_ALLOWED_HOSTS: '',
+      SUITOR_PORT: String(port),
+      SUITOR_CANDIDATE_NAME: 'LAN Warning Candidate',
+      SUITOR_CANDIDATE_FIRST: 'LAN',
+      SUITOR_ASSISTANT_NAME: 'Assistant',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  try {
+    await waitForSuitorServer({ port, tokenPath, child, getOutput: () => `${stdout}\n${stderr}` });
+    const output = `${stdout}\n${stderr}`;
+    assert.match(output, /SUITOR_ALLOWED_HOSTS is empty in LAN mode/i, output);
+    assert.match(output, /DNS-rebinding protection/i, output);
+  } catch (err) {
+    err.message += `\nlan warning server stdout:\n${stdout}\nlan warning server stderr:\n${stderr}`;
+    throw err;
+  } finally {
+    if (child.exitCode == null) child.kill();
+    await delay(250);
+    rmSync(profileRoot, { recursive: true, force: true });
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
 try {
   assertAgentSandboxSource();
   await assertUploadPathSafety();
   await assertAuthRateLimit();
   await assertLanModeUrlSafety();
+  await assertLanHostAllowlistWarning();
   console.log('security hardening regression passed');
 } catch (err) {
   console.error('security hardening regression failed');

@@ -4,6 +4,7 @@ import { spawnSync } from 'child_process';
 import { cpSync, existsSync, mkdirSync, readFileSync, writeFileSync, rmSync, readdirSync, statSync, renameSync } from 'fs';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { assertSafeFetchUrl, strictUrlFetchEnabled } from '../providers/_url_safety.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function envValue(name, legacyName, fallback = '') {
@@ -413,6 +414,29 @@ function htmlToText(html) {
     .trim());
 }
 
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+async function fetchJobUrlWithSafety(rawUrl, options = {}) {
+  const strict = strictUrlFetchEnabled();
+  let currentUrl = String(rawUrl || '');
+  for (let hop = 0; hop <= 5; hop++) {
+    await assertSafeFetchUrl(currentUrl, { strict });
+    const response = await fetch(currentUrl, {
+      ...options,
+      redirect: strict ? 'manual' : 'follow',
+    });
+    if (!strict) {
+      return { response, finalUrl: response.url, redirected: Boolean(response.redirected) };
+    }
+    const location = response.headers.get('location');
+    if (!REDIRECT_STATUSES.has(response.status) || !location) {
+      return { response, finalUrl: currentUrl, redirected: currentUrl !== String(rawUrl || '') };
+    }
+    currentUrl = new URL(location, currentUrl).toString();
+  }
+  throw new Error('HTTP redirect limit exceeded while validating job URL.');
+}
+
 function hostnameFromUrl(value = '') {
   try {
     return new URL(String(value || '')).hostname.replace(/^www\./i, '').toLowerCase();
@@ -433,12 +457,24 @@ export async function browserRecoverJobPage(offer = {}) {
   const started = Date.now();
   let browser;
   try {
+    const strict = strictUrlFetchEnabled();
+    await assertSafeFetchUrl(offer.url, { strict });
     const { chromium } = await import('playwright');
     browser = await chromium.launch({ headless: true });
     const page = await browser.newPage({
       viewport: { width: 1280, height: 1000 },
       userAgent: `${CANDIDATE_FIRST}-Suitor/1.0 browser-recovery`,
     });
+    if (strict) {
+      await page.route('**/*', async route => {
+        try {
+          await assertSafeFetchUrl(route.request().url(), { strict: true });
+          await route.continue();
+        } catch {
+          await route.abort('blockedbyclient');
+        }
+      });
+    }
     await page.goto(offer.url, { waitUntil: 'domcontentloaded', timeout: 25000 });
     await page.waitForLoadState('networkidle', { timeout: 12000 }).catch(() => {});
     await page.waitForTimeout(1200);
@@ -552,13 +588,12 @@ export async function fetchCandidate(offer) {
   const timeout = setTimeout(() => controller.abort(), 20000);
   const started = Date.now();
   try {
-    const response = await fetch(offer.url, {
+    const { response, finalUrl, redirected } = await fetchJobUrlWithSafety(offer.url, {
       signal: controller.signal,
       headers: {
         'user-agent': `${CANDIDATE_FIRST}-Suitor/1.0`,
         accept: 'text/html,application/xhtml+xml,application/json,text/plain;q=0.8,*/*;q=0.5',
       },
-      redirect: 'follow',
     });
     const body = await response.text();
     const text = htmlToText(body).slice(0, 18000);
@@ -567,8 +602,8 @@ export async function fetchCandidate(offer) {
       offer,
       status: response.status,
       ok: response.ok,
-      redirected: response.redirected,
-      finalUrl: response.url,
+      redirected,
+      finalUrl,
       readableText: text,
       browserSnippet: offer.browserSnippet,
     });
@@ -590,7 +625,7 @@ export async function fetchCandidate(offer) {
     return {
       ...offer,
       httpStatus: response.status,
-      finalUrl: response.url,
+      finalUrl,
       verificationState: classification.verificationState,
       verificationReason: classification.verificationReason,
       durationMs,
