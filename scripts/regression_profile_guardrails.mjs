@@ -39,6 +39,13 @@ function assertPortFailure(result) {
   assert.match(output, /ephemeral port 0 is not supported/, output);
 }
 
+function assertLanOptInFailure(result) {
+  const output = `${result.stdout || ''}\n${result.stderr || ''}`;
+  assert.notEqual(result.status, 0, 'server should refuse non-loopback binding without SUITOR_ALLOW_LAN=1');
+  assert.match(output, /Refusing to bind Suitor to non-loopback host/i, output);
+  assert.match(output, /SUITOR_ALLOW_LAN=1/, output);
+}
+
 try {
   assertIsolationFailure(runNode(['web/server.mjs'], {
     SUITOR_RUNTIME_ROOT: resolve(outsideRoot, 'runtime'),
@@ -66,6 +73,10 @@ try {
 
   assertPortFailure(runNode(['web/server.mjs'], {
     SUITOR_PORT: '0',
+  }));
+
+  assertLanOptInFailure(runNode(['web/server.mjs'], {
+    SUITOR_HOST: '0.0.0.0',
   }));
 
   console.log('profile guardrail regression passed');

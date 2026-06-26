@@ -3,6 +3,7 @@
 import assert from 'assert/strict';
 import { spawn } from 'child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
+import { request as httpRequest } from 'http';
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
@@ -23,6 +24,34 @@ async function postJson({ port, token, path, value, headers = {} }) {
   });
   const body = await res.json().catch(async () => ({ raw: await res.text().catch(() => '') }));
   return { res, body };
+}
+
+async function rawJsonRequest({ port, path, value, headers = {} }) {
+  const body = JSON.stringify(value);
+  return await new Promise((resolvePromise, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+        ...headers,
+      },
+    }, res => {
+      let text = '';
+      res.setEncoding('utf-8');
+      res.on('data', chunk => { text += chunk; });
+      res.on('end', () => {
+        let parsed = {};
+        try { parsed = JSON.parse(text || '{}'); } catch { parsed = { raw: text }; }
+        resolvePromise({ res, body: parsed });
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 function assertAgentSandboxSource() {
@@ -242,9 +271,121 @@ async function assertUploadPathSafety() {
   }
 }
 
+async function assertAuthRateLimit() {
+  const profileRoot = mkdtempSync(join(tmpdir(), 'suitor-rate-profile-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'suitor-rate-config-'));
+  const port = 23500 + Math.floor(Math.random() * 1000);
+  const runtimeRoot = resolve(profileRoot, '.suitor-runtime');
+  const tokenPath = resolve(runtimeRoot, 'rate.app-token');
+  const child = spawn(process.execPath, ['web/server.mjs'], {
+    cwd: APP_ROOT,
+    env: {
+      ...process.env,
+      SUITOR_CONFIG_DIR: configDir,
+      SUITOR_PERSON_KEY: 'rate',
+      SUITOR_PROFILE_ROOT: profileRoot,
+      SUITOR_PORT: String(port),
+      SUITOR_CANDIDATE_NAME: 'Rate Candidate',
+      SUITOR_CANDIDATE_FIRST: 'Rate',
+      SUITOR_ASSISTANT_NAME: 'Assistant',
+      SUITOR_AUTH_FAILURE_LIMIT: '2',
+      SUITOR_AUTH_FAILURE_WINDOW_MS: '60000',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  try {
+    await waitForSuitorServer({ port, tokenPath, child, getOutput: () => `${stdout}\n${stderr}` });
+    const first = await rawJsonRequest({ port, path: '/api/login', value: { token: 'wrong-one' } });
+    const second = await rawJsonRequest({ port, path: '/api/login', value: { token: 'wrong-two' } });
+    const third = await rawJsonRequest({ port, path: '/api/login', value: { token: 'wrong-three' } });
+    assert.equal(first.res.statusCode, 401, JSON.stringify(first.body));
+    assert.equal(second.res.statusCode, 401, JSON.stringify(second.body));
+    assert.equal(third.res.statusCode, 429, JSON.stringify(third.body));
+    assert.match(third.body.error, /too many failed authentication attempts/i);
+  } catch (err) {
+    err.message += `\nrate server stdout:\n${stdout}\nrate server stderr:\n${stderr}`;
+    throw err;
+  } finally {
+    if (child.exitCode == null) child.kill();
+    await delay(250);
+    rmSync(profileRoot, { recursive: true, force: true });
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
+async function assertLanModeUrlSafety() {
+  const profileRoot = mkdtempSync(join(tmpdir(), 'suitor-lan-profile-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'suitor-lan-config-'));
+  const port = 24500 + Math.floor(Math.random() * 1000);
+  const runtimeRoot = resolve(profileRoot, '.suitor-runtime');
+  const tokenPath = resolve(runtimeRoot, 'lan.app-token');
+  const child = spawn(process.execPath, ['web/server.mjs'], {
+    cwd: APP_ROOT,
+    env: {
+      ...process.env,
+      SUITOR_CONFIG_DIR: configDir,
+      SUITOR_PERSON_KEY: 'lan',
+      SUITOR_PROFILE_ROOT: profileRoot,
+      SUITOR_HOST: '0.0.0.0',
+      SUITOR_ALLOW_LAN: '1',
+      SUITOR_ALLOWED_HOSTS: `127.0.0.1,127.0.0.1:${port}`,
+      SUITOR_PORT: String(port),
+      SUITOR_CANDIDATE_NAME: 'LAN Candidate',
+      SUITOR_CANDIDATE_FIRST: 'LAN',
+      SUITOR_ASSISTANT_NAME: 'Assistant',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  try {
+    const token = await waitForSuitorServer({ port, tokenPath, child, getOutput: () => `${stdout}\n${stderr}` });
+    assert.match(`${stdout}\n${stderr}`, /LAN mode is active/i);
+
+    const blockedHost = await rawJsonRequest({
+      port,
+      path: '/api/resume-preview',
+      headers: {
+        Host: `blocked.local:${port}`,
+        Origin: `http://blocked.local:${port}`,
+        'X-Suitor-App-Token': token,
+      },
+      value: { markdown: 'blocked host should fail' },
+    });
+    assert.equal(blockedHost.res.statusCode, 403, JSON.stringify(blockedHost.body));
+    assert.match(blockedHost.body.error, /Host is not allowed/i);
+
+    const privateUrl = await postJson({
+      port,
+      token,
+      path: '/api/liveness',
+      headers: { Origin: `http://127.0.0.1:${port}` },
+      value: { urls: ['https://127.0.0.1/private'] },
+    });
+    assert.equal(privateUrl.res.status, 400, JSON.stringify(privateUrl.body));
+    assert.match(privateUrl.body.error, /blocked private or local URL/i);
+  } catch (err) {
+    err.message += `\nlan server stdout:\n${stdout}\nlan server stderr:\n${stderr}`;
+    throw err;
+  } finally {
+    if (child.exitCode == null) child.kill();
+    await delay(250);
+    rmSync(profileRoot, { recursive: true, force: true });
+    rmSync(configDir, { recursive: true, force: true });
+  }
+}
+
 try {
   assertAgentSandboxSource();
   await assertUploadPathSafety();
+  await assertAuthRateLimit();
+  await assertLanModeUrlSafety();
   console.log('security hardening regression passed');
 } catch (err) {
   console.error('security hardening regression failed');

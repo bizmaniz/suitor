@@ -22,6 +22,20 @@ function env(name, fallback = '') {
   return process.env[name] || fallback;
 }
 
+function envFlag(name, fallback = false) {
+  const value = process.env[name];
+  if (value === undefined) return Boolean(fallback);
+  return /^(1|true|yes|on)$/i.test(String(value).trim());
+}
+
+function envList(name, fallback = []) {
+  const raw = process.env[name];
+  const values = raw === undefined ? fallback : String(raw).split(',');
+  return (Array.isArray(values) ? values : String(values).split(','))
+    .map(value => String(value).trim())
+    .filter(Boolean);
+}
+
 function initialConfig() {
   const fileConfig = readJson(CONFIG_PATH, {});
   const profileRoot = resolve(env('SUITOR_PROFILE_ROOT', fileConfig.profileRoot || resolve(APP_ROOT, '.suitor-profile')));
@@ -46,6 +60,8 @@ function initialConfig() {
     )),
     host: env('SUITOR_HOST', fileConfig.host || '127.0.0.1'),
     port: Number(env('SUITOR_PORT', fileConfig.port ?? 8787)),
+    allowLan: envFlag('SUITOR_ALLOW_LAN', fileConfig.allowLan || false),
+    allowedHosts: envList('SUITOR_ALLOWED_HOSTS', fileConfig.allowedHosts || []),
     candidateName,
     candidateFirst: first,
     candidateInitials: env('SUITOR_CANDIDATE_INITIALS', fileConfig.candidateInitials || initials(candidateName)),

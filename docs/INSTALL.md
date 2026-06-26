@@ -115,9 +115,23 @@ claude login
 
 Suitor never asks for API keys. It launches the local CLI after you authenticate that CLI yourself.
 
-## Ports And Firewall
+## Ports, Firewall, And LAN Mode
 
-Suitor defaults to `127.0.0.1:8787`, reachable only from your computer. To change the port, set `SUITOR_PORT` or edit `suitor.config.json`. To expose on a trusted LAN, set `SUITOR_HOST=0.0.0.0`; the server prints a warning.
+Suitor defaults to `127.0.0.1:8787`, reachable only from your computer. To change the port, set `SUITOR_PORT` or edit `suitor.config.json`.
+
+LAN mode is an explicit opt-in because Suitor is a local single-user app and does not provide TLS:
+
+```bash
+SUITOR_HOST=0.0.0.0 SUITOR_ALLOW_LAN=1 npm start
+```
+
+Use LAN mode only on a trusted private network. The server prints a warning at startup, blocks private-IP URL fetches from user-controlled sources, and can enforce a host allowlist:
+
+```bash
+SUITOR_HOST=0.0.0.0 SUITOR_ALLOW_LAN=1 SUITOR_ALLOWED_HOSTS="192.168.1.20:8787,suitor.local" npm start
+```
+
+Without `SUITOR_ALLOW_LAN=1`, non-loopback binds such as `0.0.0.0` are refused. `SUITOR_PORT=0` is also refused; choose a positive port explicitly.
 
 ## Data Locations
 

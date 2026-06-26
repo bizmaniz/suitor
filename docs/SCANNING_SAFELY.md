@@ -28,4 +28,10 @@ Respect each site's terms and robots guidance. If a source disallows automated a
 
 Job postings are untrusted content. Suitor tells the assistant to treat scraped text as data, not instructions, and runs the CLI in the profile folder rather than the app source. Still, review outputs before acting.
 
+## LAN Mode
+
+LAN mode is for trusted private networks only. It requires `SUITOR_HOST=0.0.0.0` or another non-loopback host plus `SUITOR_ALLOW_LAN=1`; Suitor refuses the bind otherwise.
+
+When LAN mode is active, Suitor blocks user-controlled fetches to private, loopback, link-local, and metadata IP ranges and re-checks redirects. This protects RSS feeds, provider URLs, and liveness checks from being used as local-network probes. Keep browser scans small and do not expose Suitor directly to the public internet.
+
 You are responsible for how you use Suitor and for following each platform's terms.

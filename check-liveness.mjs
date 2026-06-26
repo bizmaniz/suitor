@@ -17,6 +17,7 @@
 import { chromium } from 'playwright';
 import { readFile } from 'fs/promises';
 import { classifyLiveness } from './liveness-core.mjs';
+import { assertSafeFetchUrl, strictUrlFetchEnabled } from './providers/_url_safety.mjs';
 
 async function checkUrl(page, url) {
   try {
@@ -87,6 +88,12 @@ async function main() {
   }
 
   console.log(`Checking ${urls.length} URL(s)...\n`);
+
+  if (strictUrlFetchEnabled()) {
+    for (const url of urls) {
+      await assertSafeFetchUrl(url, { strict: true });
+    }
+  }
 
   const browser = await chromium.launch({ headless: true });
   const page = await browser.newPage();

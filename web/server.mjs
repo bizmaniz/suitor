@@ -9,6 +9,7 @@ import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
+import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -49,6 +50,25 @@ function profileLocalPath(pathValue, label) {
   return full;
 }
 
+function normalizedHostName(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^\[/, '')
+    .replace(/\]$/, '')
+    .toLowerCase();
+}
+
+function hostWithoutPort(value) {
+  const host = String(value || '').trim();
+  if (host.startsWith('[')) return normalizedHostName(host.slice(1, host.indexOf(']')));
+  return normalizedHostName(host.replace(/:\d+$/, ''));
+}
+
+function isLoopbackBindHost(value) {
+  const host = normalizedHostName(value);
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 const PERSON_KEY = String(config.personKey || 'local').toLowerCase();
 const CANDIDATE_NAME = config.candidateName;
 const CANDIDATE_FIRST = config.candidateFirst;
@@ -65,7 +85,14 @@ const ASSESSMENTS_ROOT = profileLocalPath(config.assessmentsRoot, 'SUITOR_ASSESS
 const HOST = config.host || '127.0.0.1';
 const PORT = Number(config.port ?? 8787);
 if (!Number.isFinite(PORT) || PORT <= 0) throw new Error(`Invalid SUITOR_PORT "${PORT}". Use a positive port number; ephemeral port 0 is not supported.`);
-if (HOST === '0.0.0.0') console.warn('Suitor is listening on all network interfaces because SUITOR_HOST=0.0.0.0 was set. Use this only on a trusted network.');
+const LAN_MODE = !isLoopbackBindHost(HOST);
+if (LAN_MODE && !config.allowLan) {
+  throw new Error(`Refusing to bind Suitor to non-loopback host "${HOST}". Set SUITOR_ALLOW_LAN=1 only on a trusted local network; Suitor does not provide TLS.`);
+}
+if (LAN_MODE) {
+  process.env.SUITOR_STRICT_URL_FETCH = '1';
+  console.warn('WARNING: Suitor LAN mode is active. Use only on a trusted local network; this local server does not provide TLS.');
+}
 const CLAUDE_PERMISSION_MODE = config.llm?.permissionMode || 'default';
 const TOKEN_PATH = resolve(DATA_ROOT, `${PERSON_KEY}.app-token`);
 const SESSION_PATH = resolve(DATA_ROOT, 'web-session-id.txt');
@@ -123,6 +150,9 @@ mkdirSync(BROWSER_ROOT, { recursive: true });
 const token = loadOrCreateToken();
 const tokenHash = sha256(token);
 const sessionId = loadOrCreateSessionId();
+const AUTH_FAILURE_LIMIT = Number(process.env.SUITOR_AUTH_FAILURE_LIMIT || 5);
+const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS || 5 * 60 * 1000);
+const authFailures = new Map();
 
 function localClaudeEnv() {
   return {
@@ -333,6 +363,50 @@ function logAccess(req, event, extra = {}) {
   });
 }
 
+function allowedHostValues() {
+  return new Set((config.allowedHosts || []).map(value => String(value).trim().toLowerCase()).filter(Boolean));
+}
+
+function requireAllowedHost(req, res) {
+  if (!LAN_MODE) return true;
+  const allowed = allowedHostValues();
+  if (!allowed.size) return true;
+  const requestHost = String(req.headers.host || '').trim().toLowerCase();
+  const requestHostName = hostWithoutPort(requestHost);
+  if (allowed.has(requestHost) || allowed.has(requestHostName)) return true;
+  send(res, 403, { error: 'Host is not allowed for Suitor LAN mode. Add it to SUITOR_ALLOWED_HOSTS if this is a trusted local URL.' });
+  return false;
+}
+
+function authFailureKey(req) {
+  return clientAddress(req) || 'unknown';
+}
+
+function authFailureState(req) {
+  const now = Date.now();
+  const key = authFailureKey(req);
+  const state = authFailures.get(key);
+  if (!state || now - state.firstAt > AUTH_FAILURE_WINDOW_MS) {
+    const fresh = { count: 0, firstAt: now };
+    authFailures.set(key, fresh);
+    return fresh;
+  }
+  return state;
+}
+
+function isAuthRateLimited(req) {
+  return authFailureState(req).count >= AUTH_FAILURE_LIMIT;
+}
+
+function recordAuthFailure(req) {
+  const state = authFailureState(req);
+  state.count += 1;
+}
+
+function clearAuthFailures(req) {
+  authFailures.delete(authFailureKey(req));
+}
+
 function isAuthorized(req) {
   const headerToken = req.headers['x-suitor-app-token'];
   const auth = req.headers.authorization || '';
@@ -350,7 +424,15 @@ function isAuthorized(req) {
 }
 
 function requireAuth(req, res) {
-  if (isAuthorized(req)) return true;
+  if (isAuthRateLimited(req)) {
+    send(res, 429, { error: 'Too many failed authentication attempts. Wait a few minutes and try again.' });
+    return false;
+  }
+  if (isAuthorized(req)) {
+    clearAuthFailures(req);
+    return true;
+  }
+  recordAuthFailure(req);
   send(res, 401, { error: `Unauthorized. Enter the LAN password for ${CANDIDATE_FIRST}'s Suitor.` });
   return false;
 }
@@ -3798,10 +3880,15 @@ async function handleApi(req, res, pathname) {
   if (!requireSameOriginForMutation(req, res)) return;
 
   if (pathname === '/api/login' && req.method === 'POST') {
+    if (isAuthRateLimited(req)) return send(res, 429, { ok: false, error: 'Too many failed authentication attempts. Wait a few minutes and try again.' });
     const body = JSON.parse(await readBody(req) || '{}');
     const presentedHash = Buffer.from(sha256(String(body.token || '')), 'hex');
     const expectedHash = Buffer.from(tokenHash, 'hex');
-    if (presentedHash.length !== expectedHash.length || !timingSafeEqual(presentedHash, expectedHash)) return send(res, 401, { ok: false });
+    if (presentedHash.length !== expectedHash.length || !timingSafeEqual(presentedHash, expectedHash)) {
+      recordAuthFailure(req);
+      return send(res, 401, { ok: false });
+    }
+    clearAuthFailures(req);
     logAccess(req, 'login-ok');
     res.writeHead(200, {
       'Content-Type': 'application/json; charset=utf-8',
@@ -4591,7 +4678,12 @@ async function handleApi(req, res, pathname) {
     const body = JSON.parse(await readBody(req) || '{}');
     const urls = Array.isArray(body.urls) ? body.urls.map(String).filter(u => /^https:\/\//.test(u)) : [];
     if (!urls.length) return send(res, 400, { error: 'Provide one or more https URLs.' });
-    return streamProcess('node', ['check-liveness.mjs', ...urls], res);
+    try {
+      await Promise.all(urls.map(url => assertSafeFetchUrl(url, { strict: LAN_MODE })));
+    } catch (err) {
+      return send(res, 400, { error: err.message || 'URL is not allowed in LAN mode.' });
+    }
+    return streamProcess(process.execPath, ['check-liveness.mjs', ...urls], res);
   }
 
   send(res, 404, { error: 'API route not found' });
@@ -5030,6 +5122,7 @@ function streamProfileTailorPackage(payload, res) {
 
 const server = createServer(async (req, res) => {
   try {
+    if (!requireAllowedHost(req, res)) return;
     const url = new URL(req.url, `http://${req.headers.host}`);
     if (url.pathname.startsWith('/api/')) return await handleApi(req, res, url.pathname);
     if (url.pathname === '/' || url.pathname === '/index.html') logAccess(req, 'page-load');
