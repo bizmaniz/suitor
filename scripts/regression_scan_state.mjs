@@ -6,6 +6,7 @@ import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
+import { delay, waitForSuitorServer } from './regression_server_wait.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-regression-'));
@@ -46,30 +47,6 @@ function writeProfileFiles() {
     '| --- | --- | --- | --- | --- | --- |',
     '',
   ].join('\n'), 'utf-8');
-}
-
-function delay(ms) {
-  return new Promise(resolveDelay => setTimeout(resolveDelay, ms));
-}
-
-async function waitForServer(child) {
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    if (child.exitCode != null) throw new Error(`server exited early with ${child.exitCode}`);
-    if (existsSync(tokenPath)) {
-      const token = readFileSync(tokenPath, 'utf-8').trim();
-      if (token) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
-            headers: { 'X-Suitor-App-Token': token },
-          });
-          if (res.status === 200) return token;
-        } catch {}
-      }
-    }
-    await delay(250);
-  }
-  throw new Error('server did not become ready');
 }
 
 async function api(token, path, options = {}) {
@@ -139,7 +116,12 @@ server.stdout.on('data', chunk => { stdout += chunk.toString(); });
 server.stderr.on('data', chunk => { stderr += chunk.toString(); });
 
 try {
-  const token = await waitForServer(server);
+  const token = await waitForSuitorServer({
+    port,
+    tokenPath,
+    child: server,
+    getOutput: () => `${stdout}\n${stderr}`,
+  });
 
   const boot = await api(token, '/api/bootstrap');
   assert(boot.res.status === 200, 'bootstrap should authenticate', `HTTP ${boot.res.status}`);

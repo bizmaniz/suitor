@@ -6,36 +6,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { delay, waitForSuitorServer } from './regression_server_wait.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 
 function isUnder(child, parent) {
   const rel = relative(parent, child);
   return child === parent || (Boolean(rel) && !rel.startsWith('..') && !rel.includes(':'));
-}
-
-function delay(ms) {
-  return new Promise(resolveDelay => setTimeout(resolveDelay, ms));
-}
-
-async function waitForServer({ port, tokenPath, child }) {
-  const deadline = Date.now() + 15000;
-  while (Date.now() < deadline) {
-    if (child.exitCode != null) throw new Error(`server exited early with ${child.exitCode}`);
-    if (existsSync(tokenPath)) {
-      const token = readFileSync(tokenPath, 'utf-8').trim();
-      if (token) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}/api/bootstrap`, {
-            headers: { 'X-Suitor-App-Token': token },
-          });
-          if (res.status === 200) return token;
-        } catch {}
-      }
-    }
-    await delay(250);
-  }
-  throw new Error('server did not become ready');
 }
 
 async function postJson({ port, token, path, value }) {
@@ -89,7 +66,12 @@ async function assertUploadPathSafety() {
   child.stdout.on('data', chunk => { stdout += chunk.toString(); });
   child.stderr.on('data', chunk => { stderr += chunk.toString(); });
   try {
-    const token = await waitForServer({ port, tokenPath, child });
+    const token = await waitForSuitorServer({
+      port,
+      tokenPath,
+      child,
+      getOutput: () => `${stdout}\n${stderr}`,
+    });
     const txtUpload = await postJson({
       port,
       token,
