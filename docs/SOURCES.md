@@ -29,3 +29,7 @@ The wizard can save target companies and RSS feeds. Generated `portals.yml` live
 ## Calendar Export
 
 The calendar connector is local-only. It exports scheduled interviews from the local SQLite database as an ICS file at `/api/calendar/interviews.ics`. It does not connect to a calendar account or upload events; import the file into your calendar app yourself.
+
+## Email Import
+
+The email connector is also local-only. Paste text from an exported rejection or interview email in Settings > Connections > Email import. Suitor reads that pasted text on your machine, detects rejection/interview language, updates the local tracker, and records a small local import log under `.suitor-runtime`. It does not connect to IMAP, Gmail, Outlook, or any inbox account.

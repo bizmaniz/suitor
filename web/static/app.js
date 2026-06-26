@@ -84,6 +84,9 @@ const els = {
   clearCustomSourcesBtn: $('#clearCustomSourcesBtn'),
   disconnectLinkedInBtn: $('#disconnectLinkedInBtn'),
   backupDbBtn: $('#backupDbBtn'),
+  emailImportText: $('#emailImportText'),
+  importEmailBtn: $('#importEmailBtn'),
+  clearEmailImportsBtn: $('#clearEmailImportsBtn'),
   assessmentInput: $('#assessmentInput'),
   assessmentList: $('#assessmentList'),
   assessmentRoot: $('#assessmentRoot'),
@@ -417,6 +420,10 @@ function renderConnections(connections = {}) {
     <div class="connection-row">
       <div><strong>Target company resolver</strong><span>Generates Greenhouse, Lever, and Ashby board candidates</span></div>
       <small>${Number(connections.targetCompanies?.count || 0)} companies / ${boards.length} board candidates</small>
+    </div>
+    <div class="connection-row">
+      <div><strong>Email import</strong><span>${escapeHtml(connections.email?.dataStored || 'Local paste/import only')}</span></div>
+      <small>${Number(connections.email?.importedCount || 0)} import${Number(connections.email?.importedCount || 0) === 1 ? '' : 's'}</small>
     </div>
   `;
 }
@@ -2824,6 +2831,26 @@ els.disconnectLinkedInBtn?.addEventListener('click', async () => {
 els.backupDbBtn?.addEventListener('click', async () => {
   const response = await api('/api/backup', { method: 'POST', body: JSON.stringify({}) });
   showToast(response.backupPath ? `Backup saved: ${response.backupPath}` : 'Backup saved');
+});
+
+els.importEmailBtn?.addEventListener('click', async () => {
+  const message = els.emailImportText?.value.trim() || '';
+  if (!message) return showToast('Paste email text first');
+  const response = await api('/api/connections/email/import', {
+    method: 'POST',
+    body: JSON.stringify({ message }),
+  });
+  renderConnections(response.connections || {});
+  renderApplications(response.trackerCards || state.trackerCards);
+  els.emailImportText.value = '';
+  showToast(response.message || 'Email imported');
+});
+
+els.clearEmailImportsBtn?.addEventListener('click', async () => {
+  if (!confirm('Clear local email import history? This does not remove tracker rows already created.')) return;
+  const response = await api('/api/connections/email/clear', { method: 'POST', body: JSON.stringify({}) });
+  renderConnections(response.connections || {});
+  showToast('Email import history cleared');
 });
 
 if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark');

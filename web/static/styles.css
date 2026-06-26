@@ -2154,6 +2154,16 @@ input:focus-visible {
   color: var(--muted, #66717f);
 }
 
+.email-import-panel {
+  margin: 10px 0;
+}
+
+.email-import-panel textarea {
+  width: 100%;
+  margin-top: 8px;
+  resize: vertical;
+}
+
 @media (max-width: 720px) {
   .onboarding-overlay {
     padding: 12px;

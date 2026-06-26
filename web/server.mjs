@@ -70,6 +70,7 @@ const SESSION_PATH = resolve(DATA_ROOT, 'web-session-id.txt');
 const CHAT_LOG = resolve(DATA_ROOT, 'web-chat-log.ndjson');
 const CHAT_BACKUP_ROOT = resolve(DATA_ROOT, 'chat-backups');
 const ACCESS_LOG = resolve(DATA_ROOT, 'access-log.ndjson');
+const EMAIL_IMPORT_LOG = resolve(DATA_ROOT, 'email-imports.ndjson');
 const UPLOAD_ROOT = resolve(DATA_ROOT, 'uploads');
 const BROWSER_ROOT = resolve(DATA_ROOT, 'browser');
 const BROWSER_STATUS_PATH = resolve(BROWSER_ROOT, 'status.json');
@@ -841,6 +842,12 @@ function connectionStatus() {
       count: (config.connections?.targetCompanies || []).length,
       generatedBoards: generatedTargetCompanyEntries(config.connections?.targetCompanies || []),
     },
+    email: {
+      enabled: Boolean(config.connections?.email?.enabled),
+      status: existsSync(EMAIL_IMPORT_LOG) ? 'local_imports' : 'not_set_up',
+      importedCount: existsSync(EMAIL_IMPORT_LOG) ? readFileSync(EMAIL_IMPORT_LOG, 'utf-8').split(/\r?\n/).filter(Boolean).length : 0,
+      dataStored: 'Local imported message metadata only; Suitor does not connect to an inbox.',
+    },
   };
 }
 
@@ -1027,6 +1034,67 @@ function upsertInterviewEvent({ company, role, interviewAt = '', roundType = 'sc
     INSERT INTO interviews(application_id, company, role, round_type, interview_at, prep_notes, outcome, created_at, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(applicationId, dbText(company), dbText(role), dbText(roundType), dbText(interviewAt), dbText(notes), dbText(outcome), now, now);
+}
+
+function parseEmailImport({ message = '', company = '', role = '' } = {}) {
+  const text = String(message || '').replace(/\r/g, '');
+  const subject = text.match(/^Subject:\s*(.+)$/im)?.[1]?.trim() || '';
+  const from = text.match(/^From:\s*(.+)$/im)?.[1]?.trim() || '';
+  const inferredCompany = company
+    || text.match(/\bat\s+([A-Z][A-Za-z0-9 .&'-]{2,60})\b/)?.[1]?.trim()
+    || from.match(/@([A-Za-z0-9.-]+)/)?.[1]?.split('.')?.[0]?.replace(/[-_]+/g, ' ')
+    || 'Unknown Company';
+  const inferredRole = role
+    || text.match(/\b(?:for|regarding|about)\s+(?:the\s+)?([A-Z][A-Za-z0-9 /&'-]{3,80})\s+(?:role|position|opening)\b/)?.[1]?.trim()
+    || subject.match(/\b([A-Z][A-Za-z0-9 /&'-]{3,80})\s+(?:role|position|opening)\b/)?.[1]?.trim()
+    || 'Unknown Role';
+  const isRejected = /\b(unfortunately|not moving forward|not selected|decided to move forward with other candidates|position has been filled|will not be proceeding)\b/i.test(text);
+  const isInterview = /\b(interview|recruiter screen|phone screen|schedule|calendly|availability|meet with|next step)\b/i.test(text);
+  const interviewAt = text.match(/\b(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2})?(?:Z|[+-]\d{2}:\d{2})?)\b/)?.[1] || '';
+  const kind = isRejected ? 'rejected' : isInterview ? 'screen_scheduled' : 'unknown';
+  return {
+    kind,
+    company: inferredCompany,
+    role: inferredRole,
+    subject,
+    from,
+    interviewAt,
+    notes: subject ? `Imported email: ${subject}` : 'Imported email update.',
+  };
+}
+
+function importEmailUpdate(payload = {}) {
+  const parsed = parseEmailImport(payload);
+  if (parsed.kind === 'rejected') {
+    const trackerResult = upsertRejectedApplication({
+      company: parsed.company,
+      role: parsed.role,
+      dateRejected: todayIso(),
+      source: 'email',
+      notes: parsed.notes,
+    });
+    importTrackerIntoDb(jobDb());
+    appendApplicationEvent({ company: parsed.company, role: parsed.role, type: 'rejected', at: todayIso(), notes: parsed.notes, payload: { source: 'email' } });
+    appendJsonLineAtomic(EMAIL_IMPORT_LOG, { at: new Date().toISOString(), ...parsed });
+    return { parsed, trackerResult };
+  }
+  if (parsed.kind === 'screen_scheduled') {
+    const trackerResult = upsertApplicationStage({
+      company: parsed.company,
+      role: parsed.role,
+      status: 'screen_scheduled',
+      interviewAt: parsed.interviewAt,
+      source: 'email',
+      notes: parsed.notes,
+    });
+    importTrackerIntoDb(jobDb());
+    appendApplicationEvent({ company: parsed.company, role: parsed.role, type: 'screen_scheduled', at: parsed.interviewAt || new Date().toISOString(), notes: parsed.notes, payload: { source: 'email' } });
+    upsertInterviewEvent({ company: parsed.company, role: parsed.role, interviewAt: parsed.interviewAt, roundType: 'screen_scheduled', notes: parsed.notes });
+    appendJsonLineAtomic(EMAIL_IMPORT_LOG, { at: new Date().toISOString(), ...parsed });
+    return { parsed, trackerResult };
+  }
+  appendJsonLineAtomic(EMAIL_IMPORT_LOG, { at: new Date().toISOString(), ...parsed });
+  return { parsed, trackerResult: null };
 }
 
 function dbApplicationToCard(row = {}) {
@@ -3377,6 +3445,33 @@ async function handleApi(req, res, pathname) {
       mkdirSync(BROWSER_ROOT, { recursive: true });
     }
     writeOnboardingArtifacts(config);
+    return send(res, 200, { ok: true, connections: connectionStatus() });
+  }
+
+  if (pathname === '/api/connections/email/import' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const message = String(body.message || '').trim();
+    if (!message) return send(res, 400, { error: 'Paste or upload email text to import.' });
+    config.connections ||= {};
+    config.connections.email = { enabled: true };
+    saveConfig(config);
+    const result = importEmailUpdate({ message, company: body.company, role: body.role });
+    return send(res, 200, {
+      ok: true,
+      parsed: result.parsed,
+      trackerCards: enrichCardsWithScores(dbTrackerCards()),
+      connections: connectionStatus(),
+      message: result.parsed.kind === 'unknown'
+        ? 'Email imported, but no rejection or interview signal was detected.'
+        : `Email imported as ${result.parsed.kind}.`,
+    });
+  }
+
+  if (pathname === '/api/connections/email/clear' && req.method === 'POST') {
+    if (existsSync(EMAIL_IMPORT_LOG)) writeTextAtomic(EMAIL_IMPORT_LOG, '');
+    config.connections ||= {};
+    config.connections.email = { enabled: false };
+    saveConfig(config);
     return send(res, 200, { ok: true, connections: connectionStatus() });
   }
 

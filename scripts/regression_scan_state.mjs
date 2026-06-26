@@ -238,6 +238,18 @@ try {
   assert(countCompanyRoleRows(rejected.body.trackerMarkdown, /^##\s+Active Applications/i, 'PandaDoc', 'Director of Partnerships') === 0, 'rejected application should not leave a copy in Active Applications', rejected.body.trackerMarkdown);
   assert(countCompanyRoleRows(rejected.body.trackerMarkdown, /^##\s+Rejected\b/i, 'PandaDoc', 'Director of Partnerships') === 1, 'rejected application should have one rejected close-out row', rejected.body.trackerMarkdown);
 
+  const emailImport = await postJson(token, '/api/connections/email/import', {
+    message: [
+      'Subject: Update for the Operations Lead role',
+      'From: recruiting@mailco.example',
+      '',
+      'Unfortunately, we will not be proceeding with your application for the Operations Lead role at MailCo.',
+    ].join('\n'),
+  });
+  assert(emailImport.res.status === 200, 'local email import should respond', JSON.stringify(emailImport.body));
+  assert(emailImport.body.parsed?.kind === 'rejected', 'local email import should detect rejection signals', JSON.stringify(emailImport.body));
+  assert(emailImport.body.trackerCards?.some(card => /MailCo/i.test(card.title || '') && /Rejected/i.test(card.section || '')), 'local email import should add a rejected tracker row', JSON.stringify(emailImport.body.trackerCards));
+
   const stageUpdate = await postJson(token, '/api/application-stage-update', {
     company: 'Product.AI',
     role: 'Chief of Staff to the CEO',
