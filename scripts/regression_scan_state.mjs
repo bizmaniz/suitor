@@ -12,7 +12,8 @@ const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-regression-'));
 const port = 19000 + Math.floor(Math.random() * 2000);
 const runtimeRoot = resolve(profileRoot, '.suitor-runtime');
-const tokenPath = resolve(runtimeRoot, 'Test Candidate.app-token');
+const personKey = 'Test Candidate';
+const tokenPath = resolve(runtimeRoot, `${personKey.toLowerCase()}.app-token`);
 
 function writeProfileFiles() {
   mkdirSync(runtimeRoot, { recursive: true });
@@ -100,7 +101,7 @@ const server = spawn(process.execPath, ['web/server.mjs'], {
   cwd: APP_ROOT,
   env: {
     ...process.env,
-    SUITOR_PERSON_KEY: 'Test Candidate',
+    SUITOR_PERSON_KEY: personKey,
     SUITOR_PROFILE_ROOT: profileRoot,
     SUITOR_PORT: String(port),
     SUITOR_CANDIDATE_NAME: 'Sample Candidate',

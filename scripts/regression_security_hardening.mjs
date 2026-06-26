@@ -45,14 +45,15 @@ async function assertUploadPathSafety() {
   const configDir = mkdtempSync(join(tmpdir(), 'suitor-security-config-'));
   const port = 21000 + Math.floor(Math.random() * 2000);
   const runtimeRoot = resolve(profileRoot, '.suitor-runtime');
-  const tokenPath = resolve(runtimeRoot, 'security.app-token');
+  const personKey = 'security';
+  const tokenPath = resolve(runtimeRoot, `${personKey.toLowerCase()}.app-token`);
   const outsideMarker = resolve(dirname(profileRoot), 'suitor-python-injection-marker.txt');
   const child = spawn(process.execPath, ['web/server.mjs'], {
     cwd: APP_ROOT,
     env: {
       ...process.env,
       SUITOR_CONFIG_DIR: configDir,
-      SUITOR_PERSON_KEY: 'security',
+      SUITOR_PERSON_KEY: personKey,
       SUITOR_PROFILE_ROOT: profileRoot,
       SUITOR_PORT: String(port),
       SUITOR_CANDIDATE_NAME: 'Security Candidate',

@@ -19,6 +19,16 @@ function serverHasListened(output, port) {
   return new RegExp(`web app listening on http://127\\.0\\.0\\.1:${escapedPort}`).test(output || '');
 }
 
+function serverReportedTokenPath(output) {
+  const match = String(output || '').match(/^Token file:\s*(.+)$/m);
+  return match ? match[1].trim() : '';
+}
+
+function readToken(path) {
+  if (!path || !existsSync(path)) return '';
+  return readFileSync(path, 'utf-8').trim();
+}
+
 export async function waitForSuitorServer({
   port,
   tokenPath,
@@ -33,8 +43,9 @@ export async function waitForSuitorServer({
   while (Date.now() < deadline) {
     if (child.exitCode != null) throw new Error(`server exited early with ${child.exitCode}`);
 
-    let token = '';
-    if (existsSync(tokenPath)) token = readFileSync(tokenPath, 'utf-8').trim();
+    const output = getOutput();
+    const reportedTokenPath = serverReportedTokenPath(output);
+    const token = readToken(reportedTokenPath) || readToken(tokenPath);
 
     if (token) {
       try {
@@ -45,8 +56,8 @@ export async function waitForSuitorServer({
         lastProbe = `GET / -> ${err.name || err.message}`;
       }
 
-      if (serverHasListened(getOutput(), port)) return token;
-    } else if (serverHasListened(getOutput(), port)) {
+      if (serverHasListened(output, port)) return token;
+    } else if (serverHasListened(output, port)) {
       lastProbe = 'server listened but token was not written yet';
     }
 
