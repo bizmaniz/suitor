@@ -39,6 +39,16 @@ Config file: `suitor.config.json` in `SUITOR_CONFIG_DIR` or `~/.suitor`.
 | `SUITOR_COMP_FLOOR` | Generic local scorer floor |
 | `SUITOR_RELOCATION_COMP_FLOOR` | Optional relocation/location scorer floor |
 
+## Intake
+
+The web wizard stores intake data in `intake.tier1`, `intake.tier2`, `intake.tier3`, and `intake.interview`.
+
+- Tier 1 unlocks scanning: basics, target-role direction, logistics, and compensation.
+- Tier 2 unlocks tailored materials: experience/proof, strengths, and voice guardrails.
+- Tier 3 enriches matching: workflow, manager/culture, industry/company fit, career direction, tradeoffs, dealbreakers, exclude keywords, automatic rejections, and manual-review criteria.
+
+On save, Suitor writes `Candidate Search Profile.md`, `Candidate Search Profile.json`, `Job Scan Prompt.md`, and `Intake Status.md` in the profile folder. The JSON scoring model uses weights `role 25`, `environment 20`, `compensation 20`, `lifestyle 15`, `growth 10`, and `risk 10`.
+
 ## Document Paths
 
 | Env var | Default |

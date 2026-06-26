@@ -27,6 +27,18 @@ const {
   writeReport,
 } = await import('./verified_scan.mjs');
 
+mkdirSync(profileRoot, { recursive: true });
+writeFileSync(resolve(profileRoot, 'Candidate Search Profile.json'), JSON.stringify({
+  scoring: {
+    thresholds: { shortlist: 82, manual_review_min: 65, reject_below: 65 },
+    hardFilters: {
+      excludeKeywords: ['commission-only'],
+      automaticRejections: ['unpaid trial'],
+      manualReviewCriteria: ['equity-heavy compensation'],
+    },
+  },
+}, null, 2), 'utf-8');
+
 const longJobBody = `
 Chief of Staff to the CEO
 This role owns strategic operations, operating cadence, cross-functional execution,
@@ -227,6 +239,24 @@ assert.equal(suppressedBuiltIn.suppressed.length, 1);
 assert.match(suppressedBuiltIn.suppressed[0].offer.title, /Chief of Staff - BuiltIn/);
 assert.equal(suppressedBuiltIn.offers.length, 1);
 assert.match(suppressedBuiltIn.offers[0].title, /Director of Strategic Operations/);
+
+const hardFiltered = filterSuppressedOffers([
+  {
+    title: 'Chief of Staff - commission-only',
+    company: 'Example Sales',
+    role: 'Chief of Staff',
+    url: 'https://example.com/commission-only',
+  },
+  {
+    title: 'Chief of Staff to the COO',
+    company: 'Example Ops',
+    role: 'Chief of Staff',
+    url: 'https://example.com/chief-of-staff',
+  },
+]);
+assert.equal(hardFiltered.suppressed.length, 1);
+assert.equal(hardFiltered.suppressed[0].hardFilter, 'commission-only');
+assert.equal(hardFiltered.offers.length, 1);
 
 const realCompanyAfterPlaceholderPass = filterSuppressedOffers([
   {

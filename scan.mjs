@@ -267,6 +267,20 @@ function isCompanyExcluded(job, excludedCompanies) {
   return excludedCompanies.some(excluded => company === excluded || company.includes(excluded) || excluded.includes(company));
 }
 
+function excludedKeywords(config) {
+  const raw = config.exclude_keywords || config.excluded_keywords || config.hard_filter_keywords || [];
+  const items = Array.isArray(raw) ? raw : Object.values(raw).flat();
+  return items.map(item => String(item || '').trim().toLowerCase()).filter(item => item.length >= 3);
+}
+
+function hasExcludedKeyword(job, keywords) {
+  if (!keywords.length) return false;
+  const haystack = [job.title, job.company, job.location, job.url, job.source]
+    .map(value => String(value || '').toLowerCase())
+    .join(' ');
+  return keywords.some(keyword => haystack.includes(keyword));
+}
+
 function builtinEntries(config) {
   return (config.builtin_queries || [])
     .filter(query => query.enabled !== false)
@@ -413,6 +427,7 @@ async function main() {
   const titleFilter = buildTitleFilter(config.title_filter);
   const locationFilter = buildLocationFilter(config.location_filter);
   const excludedCompanies = excludedCompanyNames(config);
+  const keywordExclusions = excludedKeywords(config);
 
   // 3. Resolve a provider for each enabled company
   const targets = [];
@@ -477,6 +492,11 @@ async function main() {
         }
         if (isCompanyExcluded(job, excludedCompanies)) {
           totalExcludedCompany++;
+          bySource[provider.id].filtered++;
+          continue;
+        }
+        if (hasExcludedKeyword(job, keywordExclusions)) {
+          totalFilteredTitle++;
           bySource[provider.id].filtered++;
           continue;
         }

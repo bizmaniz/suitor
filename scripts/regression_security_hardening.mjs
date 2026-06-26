@@ -130,12 +130,63 @@ async function assertUploadPathSafety() {
       },
     });
     assert.equal(onboarding.res.status, 200, JSON.stringify(onboarding.body));
+    assert.equal(onboarding.body.status.scanningUnlocked, true, JSON.stringify(onboarding.body.status));
+    assert.equal(onboarding.body.status.tailoringUnlocked, false, JSON.stringify(onboarding.body.status));
+
+    const richIntake = await postJson({
+      port,
+      token,
+      path: '/api/onboarding',
+      value: {
+        assistantName: 'Assistant',
+        intake: {
+          tier1: {
+            basics: 'Security Candidate',
+            targetRole: 'Security operations and automation leadership',
+            logistics: 'Remote US time zones',
+            compensation: 'Market floor required',
+          },
+          tier2: {
+            experience: 'Built secure workflow automation with measurable incident reduction.',
+            strengths: 'Systems thinking, evidence-based triage, and calm incident leadership.',
+            voice: 'Direct, factual, and specific; avoid inflated claims.',
+          },
+          tier3: {
+            personalityWorkflow: 'Works best with clear ownership and pragmatic documentation.',
+            managerCulture: 'Needs direct feedback and low-drama execution culture.',
+            industryFit: 'Security, infrastructure, and developer-tool companies.',
+            careerDirection: 'Grow toward security operations leadership.',
+            tradeoffs: 'Manager quality beats title when scope is real.',
+            dealbreakers: 'Commission-only roles; unpaid trial work.',
+            excludeKeywords: 'commission-only\nunpaid trial',
+            automaticRejections: 'Commission-only roles\nUnpaid trial work',
+            manualReview: 'Equity-heavy compensation with low base',
+          },
+        },
+        connections: {
+          providers: { greenhouse: true, lever: true, ashby: true, rss: true },
+          rssFeeds: ['https://example.com/jobs.xml'],
+          targetCompanies: ['Example Labs'],
+        },
+        onboarded: true,
+      },
+    });
+    assert.equal(richIntake.res.status, 200, JSON.stringify(richIntake.body));
+    assert.equal(richIntake.body.status.scanningUnlocked, true, JSON.stringify(richIntake.body.status));
+    assert.equal(richIntake.body.status.tailoringUnlocked, true, JSON.stringify(richIntake.body.status));
+
+    const profileJson = JSON.parse(readFileSync(resolve(profileRoot, 'Candidate Search Profile.json'), 'utf-8'));
+    assert.equal(profileJson.schemaVersion, 2, JSON.stringify(profileJson));
+    assert.deepEqual(profileJson.scoring.weights, { role: 25, environment: 20, compensation: 20, lifestyle: 15, growth: 10, risk: 10 });
+    assert.ok(profileJson.scoring.hardFilters.excludeKeywords.includes('commission-only'), JSON.stringify(profileJson.scoring.hardFilters));
+    assert.match(readFileSync(resolve(profileRoot, 'Candidate Search Profile.md'), 'utf-8'), /## Manual Review Criteria/);
     const portals = readFileSync(resolve(profileRoot, 'portals.yml'), 'utf-8');
     assert.match(portals, /tracked_companies:/);
     assert.match(portals, /provider: greenhouse/);
     assert.match(portals, /provider: lever/);
     assert.match(portals, /provider: ashby/);
     assert.match(portals, /rss_feeds:\n\s+- name: "Custom RSS 1"\n\s+url: "https:\/\/example\.com\/jobs\.xml"/);
+    assert.match(portals, /exclude_keywords:\n\s+- "commission-only"/);
 
     const cleared = await postJson({
       port,

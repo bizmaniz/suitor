@@ -73,7 +73,7 @@ The setup script writes `suitor.config.json` under your user config directory an
 npm start
 ```
 
-Open `http://127.0.0.1:8787`, unlock with the generated token from `<profile root>/.suitor-runtime/local.app-token`, and finish onboarding.
+Open `http://127.0.0.1:8787`, unlock with the generated token from `<profile root>/.suitor-runtime/local.app-token`, and start onboarding. Complete Tier 1 to unlock scanning; keep going through Tier 2 and Tier 3 when you want stronger tailoring and matching.
 
 ## POSIX Smoke Checklist For Maintainers
 

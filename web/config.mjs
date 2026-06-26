@@ -95,9 +95,27 @@ function defaultConnections() {
 
 function defaultIntakeState() {
   return {
-    tier1: {},
-    tier2: {},
-    tier3: {},
+    tier1: { basics: '', targetRole: '', logistics: '', compensation: '' },
+    tier2: { experience: '', strengths: '', voice: '' },
+    tier3: {
+      personalityWorkflow: '',
+      managerCulture: '',
+      industryFit: '',
+      careerDirection: '',
+      tradeoffs: '',
+      dealbreakers: '',
+      excludeKeywords: '',
+      automaticRejections: '',
+      manualReview: '',
+    },
+    interview: {
+      currentStage: 'baseline',
+      responses: {},
+      classifications: {},
+      energizers: '',
+      drainers: '',
+      contradictions: '',
+    },
     progress: { tier1Complete: false, tier2Complete: false, tier3Complete: false },
     gapReportPath: '',
   };
@@ -155,10 +173,14 @@ export function onboardingStatus(current = config) {
 
 export function intakeTierComplete(tier, current = config) {
   const data = current.intake?.[tier] || {};
+  const interview = current.intake?.interview || {};
+  const responses = interview.responses || {};
+  const value = key => String(data[key] || responses[key]?.summary || responses[key]?.notes || '').trim();
   const required = {
     tier1: ['basics', 'targetRole', 'logistics', 'compensation'],
-    tier2: ['experience', 'voice'],
-    tier3: [],
+    tier2: ['experience', 'strengths', 'voice'],
+    tier3: ['personalityWorkflow', 'managerCulture', 'industryFit', 'careerDirection', 'tradeoffs', 'dealbreakers'],
   }[tier] || [];
-  return required.every(key => Boolean(data[key]));
+  if (tier === 'tier3') return required.some(key => Boolean(value(key)));
+  return required.every(key => Boolean(value(key)));
 }

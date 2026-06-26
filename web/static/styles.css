@@ -2066,8 +2066,18 @@ input:focus-visible {
   font-size: 15px;
 }
 
+.onboarding-panel details.wizard-section summary {
+  cursor: pointer;
+  list-style-position: inside;
+}
+
+.onboarding-panel details.wizard-section summary h3 {
+  display: inline;
+}
+
 .wizard-section textarea,
-.wizard-section input[name="assistantName"] {
+.wizard-section input[name="assistantName"],
+.wizard-section select {
   width: 100%;
   min-height: 48px;
 }
@@ -2081,6 +2091,12 @@ input:focus-visible {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.intake-questions {
+  margin: 0;
+  padding-left: 20px;
+  color: var(--muted, #65717d);
 }
 
 .wizard-checks span,

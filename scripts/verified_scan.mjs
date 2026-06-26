@@ -181,15 +181,39 @@ function decisionMatchesOffer(decision, offer) {
 
 export function filterSuppressedOffers(offers) {
   const decisions = readScanStateDecisions();
-  if (!decisions.length) return { offers, suppressed: [] };
   const suppressed = [];
   const active = [];
   for (const offer of offers) {
-    const match = decisions.find(decision => decisionMatchesOffer(decision, offer));
-    if (match) suppressed.push({ offer, decision: match });
-    else active.push(offer);
+    const hardFilter = hardFilterMatch(offer);
+    if (hardFilter) suppressed.push({ offer, hardFilter });
+    else {
+      const match = decisions.find(decision => decisionMatchesOffer(decision, offer));
+      if (match) suppressed.push({ offer, decision: match });
+      else active.push(offer);
+    }
   }
   return { offers: active, suppressed };
+}
+
+function hardFilterTerms() {
+  const profile = profileJson();
+  const filters = profile?.scoring?.hardFilters || {};
+  return [
+    ...(Array.isArray(filters.excludeKeywords) ? filters.excludeKeywords : []),
+    ...(Array.isArray(filters.automaticRejections) ? filters.automaticRejections : []),
+  ].map(term => String(term || '').trim().toLowerCase()).filter(term => term.length >= 3);
+}
+
+function hardFilterMatch(offer = {}) {
+  const haystack = [
+    offer.title,
+    offer.role,
+    offer.company,
+    offer.location,
+    offer.source,
+    offer.url,
+  ].map(value => String(value || '').toLowerCase()).join(' ');
+  return hardFilterTerms().find(term => haystack.includes(term)) || '';
 }
 
 function appendScanHistory(offers = []) {

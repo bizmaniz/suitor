@@ -47,11 +47,13 @@ The wizard walks through:
 1. Environment check for Node, Codex, and Claude.
 2. LLM choice: ChatGPT via Codex or Claude via Claude Code.
 3. Assistant name.
-4. Tier 1 intake, which unlocks scanning.
-5. Tier 2 intake and resume upload, which unlock tailored materials.
+4. A staged recruiter interview that asks for evidence, constraints, tradeoffs, energizers, drainers, and dealbreakers.
+5. Rich fallback form sections if you would rather paste structured notes than chat.
 6. Connections: local database, LinkedIn manual browser session, providers, custom RSS feeds, and target companies.
 
-Tip: for intake answers, you can dictate into your own OS or phone voice-to-text tool and paste the text. Suitor does not record or process audio.
+Tier 1 unlocks scanning once basics, target-role direction, logistics, and compensation floor exist. Tier 2 unlocks tailored materials once experience/proof, strengths, and voice guardrails exist. Tier 3 is optional and improves matching with workflow, culture, industry, growth, tradeoff, and dealbreaker detail.
+
+The intake writes `Candidate Search Profile.md`, `Candidate Search Profile.json`, `Job Scan Prompt.md`, and `Intake Status.md` under your profile folder. The JSON includes scoring weights, hard filters, automatic rejection criteria, manual-review criteria, and exclude keywords used by scans.
 
 ## Security And Your Data
 

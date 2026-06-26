@@ -1969,6 +1969,101 @@ function applyOnboardingGates(onboarding = state.onboarding) {
   }
 }
 
+function intakeText(value) {
+  return escapeHtml(String(value || ''));
+}
+
+function intakeQuestions(stage) {
+  return (stage?.questions || []).map(item => `<li>${escapeHtml(item)}</li>`).join('');
+}
+
+function intakeFallbackSections(tier1 = {}, tier2 = {}, tier3 = {}) {
+  return `
+    <details class="wizard-section" open>
+      <summary><h3>Tier 1: unlock scanning</h3></summary>
+      <textarea name="basics" required placeholder="Baseline facts: name, location, authorization, links, current search state">${intakeText(tier1.basics)}</textarea>
+      <textarea name="targetRole" required placeholder="Role direction: problems to own, title families, altitude, evidence">${intakeText(tier1.targetRole)}</textarea>
+      <textarea name="logistics" required placeholder="Location, remote/hybrid/onsite, travel, time zones, availability">${intakeText(tier1.logistics)}</textarea>
+      <textarea name="compensation" required placeholder="Compensation floor, target, flexibility, benefits constraints">${intakeText(tier1.compensation)}</textarea>
+    </details>
+    <details class="wizard-section" open>
+      <summary><h3>Tier 2: unlock tailored materials</h3></summary>
+      <p class="helper-text">Upload resume last. It backfills proof, but the interview should still capture your own evidence and voice.</p>
+      <textarea name="experience" placeholder="Evidence inventory: roles, projects, outcomes, scope, metrics, tools">${intakeText(tier2.experience)}</textarea>
+      <textarea name="strengths" placeholder="Strengths, energizers, drainers, repeated wins, proof quality">${intakeText(tier2.strengths)}</textarea>
+      <textarea name="voice" placeholder="Voice, words to avoid, claims to avoid, standard answers, writing guardrails">${intakeText(tier2.voice)}</textarea>
+      <label class="attach button-secondary compact">Upload resume last<input id="wizardResumeInput" type="file" accept=".pdf,.doc,.docx,.md,.txt"></label>
+    </details>
+    <details class="wizard-section">
+      <summary><h3>Tier 3: enrich matching</h3></summary>
+      <textarea name="personalityWorkflow" placeholder="Personality and workflow: ambiguity, structure, pace, collaboration, operating rhythm">${intakeText(tier3.personalityWorkflow)}</textarea>
+      <textarea name="managerCulture" placeholder="Manager, team, and culture fit">${intakeText(tier3.managerCulture)}</textarea>
+      <textarea name="industryFit" placeholder="Industry, company, customer, and business-model fit">${intakeText(tier3.industryFit)}</textarea>
+      <textarea name="careerDirection" placeholder="Career direction, growth appetite, narrative, next-role purpose">${intakeText(tier3.careerDirection)}</textarea>
+      <textarea name="tradeoffs" placeholder="Tradeoffs, contradictions, priority tests">${intakeText(tier3.tradeoffs)}</textarea>
+      <textarea name="dealbreakers" placeholder="Dealbreakers and hard pass criteria">${intakeText(tier3.dealbreakers || tier3.targeting)}</textarea>
+      <textarea name="excludeKeywords" placeholder="Exclude keywords or title/company patterns, one per line">${intakeText(tier3.excludeKeywords)}</textarea>
+      <textarea name="automaticRejections" placeholder="Automatic rejection criteria, one per line">${intakeText(tier3.automaticRejections)}</textarea>
+      <textarea name="manualReview" placeholder="Manual review criteria, one per line">${intakeText(tier3.manualReview)}</textarea>
+      <textarea name="searchStatus" placeholder="Active/passive, weekly target, roles already in flight">${intakeText(tier3.searchStatus)}</textarea>
+    </details>
+  `;
+}
+
+function setIntakeStageQuestions(stages) {
+  const select = $('#intakeStageSelect');
+  const list = $('#intakeQuestionList');
+  const stage = (stages || []).find(item => item.key === select?.value) || stages?.[0];
+  if (list && stage) list.innerHTML = intakeQuestions(stage);
+}
+
+function wireIntakeChat(stages = []) {
+  const select = $('#intakeStageSelect');
+  const send = $('#intakeSendBtn');
+  const answer = $('#intakeAnswer');
+  const reply = $('#intakeReply');
+  if (!select || !send || !answer || !reply) return;
+  select.addEventListener('change', () => setIntakeStageQuestions(stages));
+  setIntakeStageQuestions(stages);
+  send.addEventListener('click', async () => {
+    const text = answer.value.trim();
+    if (!text) {
+      reply.textContent = 'Answer the current stage with facts, evidence, constraints, and tradeoffs.';
+      return;
+    }
+    send.disabled = true;
+    reply.textContent = 'Saving intake answer...';
+    try {
+      const result = await api('/api/intake/chat', {
+        method: 'POST',
+        body: JSON.stringify({ stage: select.value, answer: text }),
+      });
+      const stage = result.stage || stages.find(item => item.key === select.value);
+      if (stage?.field) {
+        const target = document.querySelector(`[name="${stage.field}"]`);
+        if (target && !target.value.trim()) target.value = text;
+      }
+      state.onboarding = result.status || state.onboarding;
+      applyOnboardingGates(state.onboarding);
+      renderOnboardingNudges(state.onboarding);
+      reply.innerHTML = [
+        `<strong>${escapeHtml(result.classification || 'likely')}</strong>`,
+        escapeHtml(result.probe || ''),
+        result.nextStage ? `Next: ${escapeHtml(result.nextStage.title)}` : '',
+      ].filter(Boolean).join('<br>');
+      if (result.nextStage?.key) {
+        select.value = result.nextStage.key;
+        setIntakeStageQuestions(stages);
+      }
+      answer.value = '';
+    } catch (err) {
+      reply.textContent = err.message || 'Could not save intake answer.';
+    } finally {
+      send.disabled = false;
+    }
+  });
+}
+
 async function showOnboardingWizard(force = false) {
   const payload = await api('/api/onboarding');
   state.onboarding = payload.status;
@@ -1977,6 +2072,8 @@ async function showOnboardingWizard(force = false) {
   const tier1 = cfg.intake?.tier1 || {};
   const tier2 = cfg.intake?.tier2 || {};
   const tier3 = cfg.intake?.tier3 || {};
+  const stages = payload.stages || [];
+  const activeStage = cfg.intake?.interview?.currentStage || stages[0]?.key || 'baseline';
   const env = await api('/api/env-check');
   let overlay = $('#onboardingOverlay');
   if (!overlay) {
@@ -2011,25 +2108,20 @@ async function showOnboardingWizard(force = false) {
         </div>
         <input name="assistantName" maxlength="40" required placeholder="Assistant name" value="${escapeHtml(cfg.assistantName || state.meta.assistantName)}">
       </section>
-      <section class="wizard-section">
-        <h3>Tier 1: unlock scanning</h3>
-        <textarea name="basics" required placeholder="Preferred name, initials, location, work authorization, contact links">${escapeHtml(tier1.basics || '')}</textarea>
-        <textarea name="targetRole" required placeholder="Target titles, variants, seniority, industries, company size">${escapeHtml(tier1.targetRole || '')}</textarea>
-        <textarea name="logistics" required placeholder="Remote/hybrid/onsite, acceptable locations/time zones, availability">${escapeHtml(tier1.logistics || '')}</textarea>
-        <textarea name="compensation" required placeholder="Base floor, target, total-comp notes, flexibility">${escapeHtml(tier1.compensation || '')}</textarea>
+      <section class="wizard-section intake-chat">
+        <h3>Recruiter interview</h3>
+        <p class="helper-text">${escapeHtml(cfg.assistantName || state.meta.assistantName)} asks direct, evidence-based questions. Save each stage as you go; Tier 1 unlocks scanning before the full persona is done.</p>
+        <select id="intakeStageSelect">
+          ${stages.map(stage => `<option value="${escapeHtml(stage.key)}" ${stage.key === activeStage ? 'selected' : ''}>${escapeHtml(stage.title)}</option>`).join('')}
+        </select>
+        <ul id="intakeQuestionList" class="intake-questions"></ul>
+        <textarea id="intakeAnswer" placeholder="Answer this stage with concrete examples, constraints, tradeoffs, and evidence."></textarea>
+        <div class="inline-actions">
+          <button class="button-secondary compact" id="intakeSendBtn" type="button">Save Stage</button>
+          <span id="intakeReply" class="helper-text">Classifications: proven, likely, aspirational, risky, or misfit.</span>
+        </div>
       </section>
-      <section class="wizard-section">
-        <h3>Tier 2: unlock tailored materials</h3>
-        <p class="helper-text">Take your time. Dictating into your own voice-to-text tool and pasting here often gives richer answers.</p>
-        <textarea name="experience" placeholder="Experience narrative, skills, wins, tools, education, positioning">${escapeHtml(tier2.experience || '')}</textarea>
-        <textarea name="voice" placeholder="Tone, words to avoid, guardrails, standard answers">${escapeHtml(tier2.voice || '')}</textarea>
-        <label class="attach button-secondary compact">Upload resume last<input id="wizardResumeInput" type="file" accept=".pdf,.doc,.docx,.md,.txt"></label>
-      </section>
-      <section class="wizard-section">
-        <h3>Tier 3: optional improvements</h3>
-        <textarea name="targeting" placeholder="Dream companies, companies to avoid, deal-breakers, fit/red-flag keywords">${escapeHtml(tier3.targeting || '')}</textarea>
-        <textarea name="searchStatus" placeholder="Active/passive, weekly application target, roles already in flight">${escapeHtml(tier3.searchStatus || '')}</textarea>
-      </section>
+      ${intakeFallbackSections(tier1, tier2, tier3)}
       <section class="wizard-section">
         <h3>Connections</h3>
         <label><input type="checkbox" name="linkedin" ${cfg.connections?.linkedin?.enabled ? 'checked' : ''}> LinkedIn manual browser session</label>
@@ -2043,6 +2135,7 @@ async function showOnboardingWizard(force = false) {
     </form>
   `;
   overlay.hidden = false;
+  wireIntakeChat(stages);
   $('#closeOnboardingBtn')?.addEventListener('click', () => { overlay.hidden = true; });
   $('#wizardResumeInput')?.addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -2072,10 +2165,19 @@ async function showOnboardingWizard(force = false) {
         },
         tier2: {
           experience: String(form.get('experience') || '').trim(),
+          strengths: String(form.get('strengths') || '').trim(),
           voice: String(form.get('voice') || '').trim(),
         },
         tier3: {
-          targeting: String(form.get('targeting') || '').trim(),
+          personalityWorkflow: String(form.get('personalityWorkflow') || '').trim(),
+          managerCulture: String(form.get('managerCulture') || '').trim(),
+          industryFit: String(form.get('industryFit') || '').trim(),
+          careerDirection: String(form.get('careerDirection') || '').trim(),
+          tradeoffs: String(form.get('tradeoffs') || '').trim(),
+          dealbreakers: String(form.get('dealbreakers') || '').trim(),
+          excludeKeywords: String(form.get('excludeKeywords') || '').trim(),
+          automaticRejections: String(form.get('automaticRejections') || '').trim(),
+          manualReview: String(form.get('manualReview') || '').trim(),
           searchStatus: String(form.get('searchStatus') || '').trim(),
         },
       },
