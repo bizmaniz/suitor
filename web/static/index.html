@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Suitor</title>
+  <link rel="stylesheet" href="/styles.css?v=20260520-browser-acp">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="nav">
+      <div class="brand">
+        <div class="mark" id="candidateInitials">CO</div>
+        <div>
+          <h1>Suitor</h1>
+          <p id="candidateName">Candidate</p>
+        </div>
+      </div>
+
+      <nav class="nav-list" aria-label="Primary">
+        <button class="nav-item active" data-view="applications">Applications</button>
+        <button class="nav-item" data-view="scans">Scans</button>
+        <button class="nav-item" data-view="resume">Resume Library</button>
+        <button class="nav-item" data-view="settings">Settings</button>
+      </nav>
+
+      <div class="guardrail-card">
+        <span>Locked Target</span>
+        <strong id="lockedTarget">Locked Target</strong>
+        <dl class="target-facts">
+          <div><dt>Comp</dt><dd><span id="compSummary">Comp floor</span> <small id="compDetail">Target comp</small></dd></div>
+          <div><dt>Location</dt><dd id="locationSummary">Atlanta metro or remote</dd></div>
+          <div><dt>This week</dt><dd id="navWeeklyProgress">0 active roles</dd></div>
+        </dl>
+      </div>
+    </aside>
+
+    <main class="main-pane">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="viewEyebrow">Applications</p>
+          <h2 id="viewTitle">Career Command Center</h2>
+        </div>
+        <div class="top-actions">
+          <button id="themeToggle" class="ghost button-utility" type="button">Light Mode</button>
+          <span id="authStatus" class="status-pill">Locked</span>
+        </div>
+      </header>
+
+      <section id="applicationsView" class="view active">
+        <section class="workflow-hero">
+          <div>
+            <p class="eyebrow">Today</p>
+            <h2>Keep the search moving without losing the thread.</h2>
+            <p id="heroSubcopy">Track what is submitted, what is ready, and what needs the next decision.</p>
+          </div>
+          <button id="weeklyPlanBtn" class="hero-action">Generate Weekly Plan</button>
+        </section>
+
+        <div id="statusSummary" class="status-summary"></div>
+
+        <div class="toolbar command-toolbar">
+          <button id="refreshBtn">Sync Applications</button>
+          <button id="saveTracker">Save Changes</button>
+          <button id="addRoleBtn">Add Role</button>
+        </div>
+
+        <div class="application-search-row">
+          <input id="applicationSearch" type="search" placeholder="Search applications by company, role, status, notes, comp, or location">
+          <button id="clearApplicationSearch" class="button-secondary compact" type="button" hidden>Clear</button>
+        </div>
+
+        <div id="statusTabs" class="status-tabs" role="tablist" aria-label="Application status"></div>
+        <div id="applicationCards" class="cards-grid"></div>
+        <details class="editor-wrap">
+          <summary>Raw tracker editor</summary>
+          <textarea id="trackerEditor" class="editor" spellcheck="false"></textarea>
+        </details>
+      </section>
+
+      <section id="scansView" class="view">
+        <div class="toolbar">
+          <button id="scanBtn" class="button-secondary">Quick Scan</button>
+          <button id="agentScanBtn" class="button-primary">Run Verified Scan</button>
+          <button id="lastScanBtn" class="button-secondary">Check Last Scan</button>
+        </div>
+        <div class="empty-state">
+          <h3>Scans</h3>
+          <p id="scanExplainer">Quick Scan does the fast ATS pull and tracker dedupe. Run Verified Scan direct-fetches each shortlisted URL, scores it against the locked profile, and saves the report.</p>
+          <p class="scan-scope">Automated API coverage follows the configured target companies and direct ATS adapters. Remaining targets are discovery leads until a direct adapter is added.</p>
+        </div>
+        <div id="scanResults" class="scan-results"></div>
+        <section id="browserPanel" class="browser-panel" aria-label="Browser activity">
+            <div class="browser-panel-header">
+              <div>
+                <p class="eyebrow">Browser Activity</p>
+                <h3>LinkedIn Session</h3>
+                <p id="browserStatusText">Idle. Use this device for manual LinkedIn review, or the Windows host browser for automated extraction.</p>
+              </div>
+              <div class="browser-actions">
+                <button id="openLinkedInLocalBtn" class="button-primary compact" type="button">Open LinkedIn on This Device</button>
+                <button id="openLinkedInBtn" class="button-secondary compact" type="button">Open Windows Browser</button>
+                <button id="checkLinkedInBtn" class="button-secondary compact" type="button">Check Session</button>
+                <button id="linkedinSearchBtn" class="button-secondary compact" type="button">Search Windows Browser</button>
+                <button id="browserCancelBtn" class="button-secondary compact" type="button">Cancel</button>
+              </div>
+            </div>
+            <div class="browser-search-row">
+              <input id="linkedinQuery" type="search" placeholder="Optional custom LinkedIn query">
+              <p class="browser-filter-note">Local LinkedIn opens in the browser you are using now. Windows Browser is the server-side Playwright session shown in the preview below.</p>
+            </div>
+            <div id="browserResults" class="browser-results" hidden></div>
+            <div class="browser-grid">
+              <div class="browser-preview-wrap">
+                <img id="browserPreview" alt="Browser preview" hidden>
+                <div id="browserPreviewEmpty" class="empty-mini">Browser screenshots will appear here during LinkedIn login or search.</div>
+              </div>
+              <pre id="browserLog" class="browser-log"></pre>
+            </div>
+        </section>
+        <details id="scanLogWrap" class="process-log-wrap">
+          <summary>Technical log</summary>
+          <pre id="scanOutput" class="terminal"></pre>
+        </details>
+      </section>
+
+      <section id="resumeView" class="view">
+        <div class="toolbar">
+          <button id="refreshResume" class="button-secondary">Refresh Preview</button>
+          <button id="tailorBtn" class="button-primary">Tailor for This JD</button>
+          <button class="button-secondary" type="button" disabled title="Coming soon">Export PDF</button>
+          <button class="button-secondary" type="button" disabled title="Coming soon">Export DOCX</button>
+          <input id="fileSearch" class="toolbar-search" type="search" placeholder="Search resumes, cover letters, PDFs...">
+        </div>
+        <section class="master-resume-panel" aria-label="Update master resume">
+          <div>
+            <p class="eyebrow">Current Master</p>
+            <h3 id="masterResumeTitle">Master resume not detected</h3>
+            <p id="masterResumeMeta">Upload a DOCX, PDF, Markdown, or text file to stage the next version without overwriting the current master.</p>
+          </div>
+          <div class="master-resume-actions">
+            <select id="masterUpdateKind" aria-label="Resume update type">
+              <option value="polish">Polish / wording update</option>
+              <option value="structural">Structural update</option>
+              <option value="new-role">New role or title change</option>
+              <option value="unknown">Not sure yet</option>
+            </select>
+            <label class="attach button-secondary">
+              Upload New Master
+              <input id="masterResumeInput" type="file" accept=".docx,.pdf,.md,.txt">
+            </label>
+            <button id="reviewMasterResumeBtn" class="button-secondary" type="button" disabled>Review Changes</button>
+            <button id="promoteMasterResumeBtn" class="button-primary" type="button" disabled>Set as Current Master</button>
+          </div>
+          <div id="masterResumePending" class="master-resume-pending" hidden></div>
+        </section>
+        <div class="resume-grid">
+          <section class="document-panel">
+            <h3>Resume preview</h3>
+            <textarea id="resumePreview" class="resume-preview" spellcheck="false"></textarea>
+          </section>
+          <section class="document-panel">
+            <h3>Tailoring input</h3>
+            <input id="tailorCompany" placeholder="Company">
+            <input id="tailorRole" placeholder="Role">
+            <textarea id="tailorJd" rows="12" placeholder="Paste the JD here, or attach it in chat."></textarea>
+            <p id="tailorHelper" class="helper-text">Add a company, role, and job description to tailor this resume.</p>
+          </section>
+        </div>
+        <div id="filesList" class="file-grid"></div>
+      </section>
+
+      <section id="settingsView" class="view">
+        <div class="settings-grid">
+          <section class="setting-card reference-card">
+            <h3>Reference Docs</h3>
+            <div class="doc-actions">
+              <button class="doc-button" data-doc="profile">Candidate Search Profile</button>
+              <button class="doc-button" data-doc="instructions">Project Instructions</button>
+              <button class="doc-button" data-doc="verification">URL Verification Protocol</button>
+            </div>
+            <div class="doc-toolbar">
+              <button id="copyDocBtn" class="button-secondary compact" type="button">Copy Instructions</button>
+              <button class="button-secondary compact" type="button" disabled title="Coming soon">Export Reference</button>
+              <button class="button-secondary compact" type="button" disabled title="Read-only reference">Edit Reference</button>
+              <button class="button-primary compact" type="button" disabled title="Read-only reference">Save Reference</button>
+            </div>
+            <div class="assessment-panel">
+              <div>
+                <h4>Workplace Assessments</h4>
+                <p id="assessmentRoot">Upload Working Genius, Enneagram, RightPath, DISC, Kolbe, StrengthsFinder, or similar PDF/Word files. The assistant uses these as soft job-fit context.</p>
+              </div>
+              <label class="attach assessment-upload">
+                Upload Assessment
+                <input id="assessmentInput" type="file" accept=".pdf,.doc,.docx">
+              </label>
+              <div id="assessmentList" class="assessment-list"></div>
+            </div>
+            <pre id="docViewer" class="doc-viewer"></pre>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <aside class="chat-pane">
+      <header class="chat-header">
+        <div>
+          <h2 id="assistantName">Assistant</h2>
+          <p id="chatContext">Context: Applications</p>
+        </div>
+        <div class="chat-header-actions">
+          <button id="clearChat" class="mini-action" type="button">Clear chat</button>
+          <span id="runIndicator" class="run-indicator idle">Idle</span>
+        </div>
+      </header>
+
+      <div id="chatLog" class="chat-log"></div>
+
+      <div id="attachments" class="attachments"></div>
+      <form id="chatForm" class="composer">
+        <textarea id="message" rows="3" placeholder="Ask the assistant to compare roles, draft a follow-up, tailor a bullet, or review a JD."></textarea>
+        <div class="composer-actions">
+          <label class="attach">
+            Attach
+            <input id="fileInput" type="file" accept=".pdf,.txt,.md,.json,image/png,image/jpeg,image/webp">
+          </label>
+          <button type="submit">Send</button>
+        </div>
+      </form>
+    </aside>
+  </div>
+
+  <dialog id="loginDialog" class="login">
+    <form method="dialog" id="loginForm">
+      <h2 id="loginTitle">Unlock Suitor</h2>
+      <p>Use the shared home-LAN password from the Windows server console.</p>
+      <input id="tokenInput" type="password" autocomplete="current-password" placeholder="Password">
+      <button>Unlock</button>
+      <p id="loginError" class="error"></p>
+    </form>
+  </dialog>
+
+  <script src="/app.js?v=20260607-chat-comp-metadata" type="module"></script>
+</body>
+</html>

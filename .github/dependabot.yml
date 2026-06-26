@@ -1,0 +1,18 @@
+version: 2
+updates:
+  # Node dependencies (package.json / package-lock.json)
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+
+  # GitHub Actions used by CI
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"

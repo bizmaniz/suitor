@@ -1,0 +1,44 @@
+{
+  "name": "suitor",
+  "version": "0.1.0",
+  "description": "Local-first, self-hosted job-search assistant with profile intake, scanning, tracking, and tailored draft generation.",
+  "private": false,
+  "scripts": {
+    "start": "node web/server.mjs",
+    "setup": "node scripts/setup.mjs",
+    "check:clean": "node scripts/check_clean.mjs && node scripts/check_sources_doc.mjs",
+    "check:sources": "node scripts/check_sources_doc.mjs",
+    "web": "node web/server.mjs",
+    "doctor": "node doctor.mjs",
+    "verify": "node verify-pipeline.mjs",
+    "normalize": "node normalize-statuses.mjs",
+    "dedup": "node dedup-tracker.mjs",
+    "merge": "node merge-tracker.mjs",
+    "pdf": "node generate-pdf.mjs",
+    "sync-check": "node cv-sync-check.mjs",
+    "liveness": "node check-liveness.mjs",
+    "scan": "node scan.mjs",
+    "audit:smoke": "node scripts/audit_smoke_surface.mjs",
+    "test:verification": "node scripts/regression_verified_classification.mjs",
+    "test:source-quality": "node scripts/regression_scan_quality_filters.mjs",
+    "test:browser-source": "node scripts/regression_browser_source.mjs",
+    "test:regression": "node scripts/regression_scan_state.mjs && node scripts/regression_verified_classification.mjs && node scripts/regression_scan_quality_filters.mjs && node scripts/regression_browser_source.mjs && node scripts/regression_app_actions.mjs && node scripts/regression_profile_guardrails.mjs"
+  },
+  "keywords": [
+    "ai",
+    "job-search",
+    "claude-code",
+    "career",
+    "automation"
+  ],
+  "author": "Bizmaniz",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22.5.0"
+  },
+  "dependencies": {
+    "dotenv": "17.4.2",
+    "js-yaml": "4.2.0",
+    "playwright": "1.60.0"
+  }
+}
