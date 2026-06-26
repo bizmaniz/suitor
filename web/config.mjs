@@ -25,7 +25,11 @@ function env(name, fallback = '') {
 function initialConfig() {
   const fileConfig = readJson(CONFIG_PATH, {});
   const profileRoot = resolve(env('SUITOR_PROFILE_ROOT', fileConfig.profileRoot || resolve(APP_ROOT, '.suitor-profile')));
-  const runtimeRoot = resolve(env('SUITOR_RUNTIME_ROOT', fileConfig.runtimeRoot || resolve(profileRoot, '.suitor-runtime')));
+  const envProfileRootSet = Boolean(process.env.SUITOR_PROFILE_ROOT);
+  const runtimeRoot = resolve(env(
+    'SUITOR_RUNTIME_ROOT',
+    envProfileRootSet ? resolve(profileRoot, '.suitor-runtime') : (fileConfig.runtimeRoot || resolve(profileRoot, '.suitor-runtime')),
+  ));
   const candidateName = env('SUITOR_CANDIDATE_NAME', fileConfig.candidateName || fileConfig.profile?.basics?.preferredName || 'Candidate');
   const first = env('SUITOR_CANDIDATE_FIRST', fileConfig.candidateFirst || String(candidateName).split(/\s+/)[0] || 'Candidate');
   return {
@@ -36,7 +40,10 @@ function initialConfig() {
     personKey: env('SUITOR_PERSON_KEY', fileConfig.personKey || 'local'),
     profileRoot,
     runtimeRoot,
-    assessmentsRoot: resolve(env('SUITOR_ASSESSMENTS_ROOT', fileConfig.assessmentsRoot || resolve(profileRoot, 'Assessments'))),
+    assessmentsRoot: resolve(env(
+      'SUITOR_ASSESSMENTS_ROOT',
+      envProfileRootSet ? resolve(profileRoot, 'Assessments') : (fileConfig.assessmentsRoot || resolve(profileRoot, 'Assessments')),
+    )),
     host: env('SUITOR_HOST', fileConfig.host || '127.0.0.1'),
     port: Number(env('SUITOR_PORT', fileConfig.port || 8787)),
     candidateName,

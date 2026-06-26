@@ -35,8 +35,10 @@ function migrateRuntimeIfNeeded(legacyRoot, currentRoot) {
 }
 
 function isUnder(child, parent) {
-  const rel = relative(parent, child);
-  return child === parent || (Boolean(rel) && !rel.startsWith('..') && !rel.includes(':'));
+  const resolvedChild = resolve(child);
+  const resolvedParent = resolve(parent);
+  const rel = relative(resolvedParent, resolvedChild);
+  return resolvedChild === resolvedParent || (Boolean(rel) && !rel.startsWith('..') && !rel.includes(':'));
 }
 
 function profileLocalPath(pathValue, label) {
@@ -274,7 +276,7 @@ function requireAuth(req, res) {
 function safeJoin(root, requestPath) {
   const clean = decodeURIComponent(requestPath.split('?')[0]).replace(/^\/+/, '');
   const full = resolve(root, clean || 'index.html');
-  if (!pathIsSameOrUnder(full, root)) return null;
+  if (!isUnder(full, root)) return null;
   return full;
 }
 
