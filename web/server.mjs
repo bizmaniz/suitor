@@ -50,6 +50,25 @@ function profileLocalPath(pathValue, label) {
   return full;
 }
 
+function safeSpawnPath(pathValue, root, label) {
+  const full = resolve(pathValue);
+  if (!isAbsolute(full) || !isUnder(full, root)) {
+    throw new Error(`${label} must be an absolute path under ${root}: ${full}`);
+  }
+  if (basename(full).startsWith('-')) {
+    throw new Error(`${label} must not start with a dash: ${full}`);
+  }
+  return full;
+}
+
+function packageInputPath(prefix, stamp) {
+  return safeSpawnPath(resolve(DATA_ROOT, `${prefix}-${stamp}.json`), DATA_ROOT, 'package input path');
+}
+
+function packageScriptPath(name) {
+  return safeSpawnPath(resolve(APP_ROOT, 'scripts', name), resolve(APP_ROOT, 'scripts'), 'package generator script');
+}
+
 function normalizedHostName(value) {
   return String(value || '')
     .trim()
@@ -67,6 +86,12 @@ function hostWithoutPort(value) {
 function isLoopbackBindHost(value) {
   const host = normalizedHostName(value);
   return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function isHostOrSubdomain(hostname, domain) {
+  const host = String(hostname || '').replace(/^www\./i, '').toLowerCase();
+  const expected = String(domain || '').toLowerCase();
+  return host === expected || host.endsWith(`.${expected}`);
 }
 
 const PERSON_KEY = String(config.personKey || 'local').toLowerCase();
@@ -349,6 +374,15 @@ function send(res, status, body, contentType = 'application/json; charset=utf-8'
     'Cache-Control': 'no-store',
   });
   res.end(payload);
+}
+
+function attachmentFilename(value = 'download') {
+  const clean = basename(String(value || 'download'))
+    .replace(/[\r\n"\\;]/g, '_')
+    .replace(/[^\w .()[\]-]/g, '_')
+    .slice(0, 180)
+    .trim();
+  return clean || 'download';
 }
 
 function clientAddress(req) {
@@ -2499,7 +2533,6 @@ function normalizeLibraryArtifactSubject(file) {
   return withFolderContext
     .replace(new RegExp(CANDIDATE_NAME.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
     .replace(new RegExp(CANDIDATE_FIRST.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), ' ')
-    .replace(/\bmaster resume v3\b/gi, 'master resume v3')
     .replace(/\bcover letter\b/gi, ' ')
     .replace(/\bresume\b/gi, ' ')
     .replace(/\bapplications\b/gi, ' ')
@@ -3172,7 +3205,6 @@ function safeBrowserLogText(text) {
   const suppressedLaunchMarker = 'Details suppressed; browser launch command and profile path were omitted from Suitor logs.';
   let value = String(text || '').replace(/\u001b\[[0-9;]*m/g, '');
   value = value
-    .replace(/\bSuitor\b/g, 'Suitor')
     .replace(/\.suitor-runtime/gi, '[runtime]')
     .replaceAll(PROFILE_ROOT, '[profile-root]')
     .replaceAll(DATA_ROOT, '[runtime-root]')
@@ -3511,8 +3543,8 @@ function companyFromJobUrl(text = '') {
     const parts = url.pathname.split('/').filter(Boolean);
     if (host === 'jobs.ashbyhq.com' && parts[0]) return titleCaseSlug(parts[0]);
     if (host === 'job-boards.greenhouse.io' && parts[0]) return titleCaseSlug(parts[0]);
-    if (host.endsWith('greenhouse.io') && parts[0] && parts[0] !== 'jobs') return titleCaseSlug(parts[0]);
-    if (host.includes('lever.co') && parts[0]) return titleCaseSlug(parts[0]);
+    if (isHostOrSubdomain(host, 'greenhouse.io') && parts[0] && parts[0] !== 'jobs') return titleCaseSlug(parts[0]);
+    if (isHostOrSubdomain(host, 'lever.co') && parts[0]) return titleCaseSlug(parts[0]);
     const cleanedHost = host
       .replace(/^jobs\./i, '')
       .replace(/^careers\./i, '')
@@ -4437,7 +4469,7 @@ async function handleApi(req, res, pathname) {
     const ext = extname(file).toLowerCase();
     res.writeHead(200, {
       'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${basename(file).replaceAll('"', '')}"`,
+      'Content-Disposition': `attachment; filename="${attachmentFilename(file)}"`,
       'Cache-Control': 'private, no-store',
     });
     return createReadStreamCompat(file, res);
@@ -4450,7 +4482,7 @@ async function handleApi(req, res, pathname) {
     const ext = extname(file).toLowerCase();
     res.writeHead(200, {
       'Content-Type': mimeTypes[ext] || 'application/octet-stream',
-      'Content-Disposition': `attachment; filename="${basename(file).replaceAll('"', '')}"`,
+      'Content-Disposition': `attachment; filename="${attachmentFilename(file)}"`,
       'Cache-Control': 'private, no-store',
     });
     return createReadStreamCompat(file, res);
@@ -4464,7 +4496,7 @@ async function handleApi(req, res, pathname) {
     if (!existsSync(file)) return send(res, 404, { error: 'Scan report not found' });
     res.writeHead(200, {
       'Content-Type': 'text/markdown; charset=utf-8',
-      'Content-Disposition': `attachment; filename="${fileName}"`,
+      'Content-Disposition': `attachment; filename="${attachmentFilename(fileName)}"`,
       'Cache-Control': 'private, no-store',
     });
     return createReadStreamCompat(file, res);
@@ -4914,7 +4946,7 @@ function streamTailorPackage(payload, res) {
   streamHeaders(res);
   setImmediate(() => {
     const stamp = Date.now();
-    const inputPath = resolve(DATA_ROOT, `tailor-${stamp}.json`);
+    const inputPath = packageInputPath('tailor', stamp);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
     appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
     const pythonBin = resolvePythonBin();
@@ -4926,7 +4958,7 @@ function streamTailorPackage(payload, res) {
       try { if (existsSync(inputPath)) rmSync(inputPath, { force: true }); } catch {}
       return;
     }
-    const child = spawn(pythonBin, [resolve(APP_ROOT, 'scripts', 'generate_tailored_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(pythonBin, ['--', packageScriptPath('generate_tailored_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '';
     let stderr = '';
     child.stdout.on('data', chunk => {
@@ -5043,7 +5075,7 @@ function streamProfileTailorPackage(payload, res) {
   const company = String(payload.company || '').trim();
   const role = String(payload.role || '').trim();
   const stamp = Date.now();
-  const inputPath = resolve(DATA_ROOT, `tailor-${stamp}.json`);
+  const inputPath = packageInputPath('tailor', stamp);
   const masterState = masterResumeStatePayload();
   const canonicalMaster = masterState.canonical || null;
   writeJsonAtomic(inputPath, {
@@ -5070,7 +5102,7 @@ function streamProfileTailorPackage(payload, res) {
     try { if (existsSync(inputPath)) rmSync(inputPath, { force: true }); } catch {}
     return;
   }
-  const child = spawn(pythonBin, [resolve(APP_ROOT, 'scripts', 'generate_profile_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(pythonBin, ['--', packageScriptPath('generate_profile_package.py'), inputPath], { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write([

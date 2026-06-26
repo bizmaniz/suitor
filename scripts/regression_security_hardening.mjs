@@ -70,6 +70,10 @@ function assertAgentSandboxSource() {
   assert.match(source, /function resolvePythonBin\(\)/);
   assert.match(source, /for \(const bin of \['python3', 'python'\]\)/);
   assert.doesNotMatch(source, /spawn\('python'/);
+  assert.match(source, /function safeSpawnPath\(pathValue, root, label\)/);
+  assert.match(source, /spawn\(pythonBin, \['--', packageScriptPath\('generate_tailored_package\.py'\), inputPath\]/);
+  assert.match(source, /spawn\(pythonBin, \['--', packageScriptPath\('generate_profile_package\.py'\), inputPath\]/);
+  assert.doesNotMatch(source, /hostname\.includes\('linkedin\.com'\)|host\.includes\('lever\.co'\)|host\.endsWith\('greenhouse\.io'\)/);
   assert.doesNotMatch(source, /raw\.replaceAll\('\/', '\\\\'\)/);
 }
 

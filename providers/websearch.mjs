@@ -1,22 +1,18 @@
 // @ts-check
 /** @typedef {import('./_types.js').Provider} Provider */
 
+import { decodeHtmlEntities, htmlToPlainText } from './_html_text.mjs';
+
 const DDG_HTML = 'https://html.duckduckgo.com/html/';
 let duckDuckGoQueue = Promise.resolve();
 
-function htmlDecode(value) {
-  return String(value || '')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>');
-}
+const htmlDecode = decodeHtmlEntities;
+const stripTags = htmlToPlainText;
 
-function stripTags(value) {
-  return htmlDecode(String(value || '').replace(/<[^>]+>/g, ''))
-    .replace(/\s+/g, ' ')
-    .trim();
+function isHostOrSubdomain(hostname, domain) {
+  const host = String(hostname || '').replace(/^www\./i, '').toLowerCase();
+  const expected = String(domain || '').toLowerCase();
+  return host === expected || host.endsWith(`.${expected}`);
 }
 
 function careersHost(entry) {
@@ -49,7 +45,7 @@ function unwrapDuckDuckGoUrl(rawHref) {
   } catch {
     return '';
   }
-  if (parsed.hostname.endsWith('duckduckgo.com') && parsed.pathname === '/l/') {
+  if (isHostOrSubdomain(parsed.hostname, 'duckduckgo.com') && parsed.pathname === '/l/') {
     const uddg = parsed.searchParams.get('uddg');
     return uddg ? decodeURIComponent(uddg) : '';
   }
@@ -64,7 +60,7 @@ function allowedUrl(url, allowedHosts) {
     return false;
   }
   if (!['http:', 'https:'].includes(parsed.protocol)) return false;
-  if (/duckduckgo\.com$|bing\.com$|monster\.com$/i.test(parsed.hostname)) return false;
+  if (['duckduckgo.com', 'bing.com', 'monster.com'].some(domain => isHostOrSubdomain(parsed.hostname, domain))) return false;
   if (!allowedHosts.length) return true;
   const host = parsed.hostname.replace(/^www\./, '');
   return allowedHosts.some(allowed => host === allowed || host.endsWith(`.${allowed}`));

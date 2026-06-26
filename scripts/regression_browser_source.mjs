@@ -2,7 +2,7 @@
 
 import assert from 'assert/strict';
 import { chromium } from 'playwright';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -29,6 +29,9 @@ const {
   compensationRangeFromText,
   isKnownBelowCompFloor,
 } = await import('./browser_adapter.mjs');
+
+const appSource = readFileSync(new URL('../web/static/app.js', import.meta.url), 'utf-8');
+assert.doesNotMatch(appSource, /hostname\.includes\('linkedin\.com'\)|field\('Link'\)\.includes\('linkedin\.com'\)/);
 
 const url = new URL(linkedInSearchUrl('Chief of Staff founder remote'));
 assert.equal(url.hostname, 'www.linkedin.com');

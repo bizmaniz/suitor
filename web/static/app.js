@@ -304,15 +304,27 @@ function renderBrowserStatus(browser = {}) {
 
 function displayBrandText(value = '') {
   return String(value || '')
-    .replace(/\bSuitor\b/g, 'Suitor')
-    .replace(/\bsuitor\b/g, 'Suitor-core')
-    .replace(/\bsuitor\b/g, 'Suitor');
+    .replace(/\bsuitor\b/g, 'Suitor-core');
+}
+
+function isHostOrSubdomain(hostname, domain) {
+  const host = String(hostname || '').replace(/^www\./i, '').toLowerCase();
+  const expected = String(domain || '').toLowerCase();
+  return host === expected || host.endsWith(`.${expected}`);
+}
+
+function linkHostnameIs(value, domain) {
+  try {
+    return isHostOrSubdomain(new URL(String(value || '')).hostname, domain);
+  } catch {
+    return false;
+  }
 }
 
 function prettyBrowserUrl(rawUrl) {
   try {
     const parsed = new URL(rawUrl);
-    if (parsed.hostname.includes('linkedin.com')) {
+    if (isHostOrSubdomain(parsed.hostname, 'linkedin.com')) {
       if (parsed.pathname.includes('/jobs/search')) return 'LinkedIn search results';
       const jobMatch = parsed.pathname.match(/\/jobs\/view\/(\d+)/);
       if (jobMatch) return `LinkedIn job ${jobMatch[1]}`;
@@ -1131,7 +1143,7 @@ function parseScanReport(raw) {
     return {
       title: rawTitle.trim(),
       verification,
-      source: field('Source') || (field('Link').includes('linkedin.com') ? 'LinkedIn' : ''),
+      source: field('Source') || (linkHostnameIs(field('Link'), 'linkedin.com') ? 'LinkedIn' : ''),
       applyType: field('Apply type'),
       location: field('Location'),
       comp: field('Posted comp'),

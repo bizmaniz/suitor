@@ -5,6 +5,7 @@ import { spawnSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
+import { htmlToPlainText } from '../providers/_html_text.mjs';
 import { isQuickReject, isSearchResultNoise } from './scan_quality_filters.mjs';
 
 assert.equal(isQuickReject({
@@ -48,6 +49,10 @@ assert.equal(isSearchResultNoise({
 
 const websearchSource = readFileSync(resolve('providers', 'websearch.mjs'), 'utf-8');
 assert.doesNotMatch(websearchSource, /r\.jina\.ai\/http:\/\/r\.jina\.ai/i, 'Jina fallback should use a single reader prefix');
+assert.doesNotMatch(websearchSource, /\.endsWith\(['"]duckduckgo\.com['"]\)/, 'DuckDuckGo host checks should use parsed host equality/subdomain validation');
+assert.doesNotMatch(websearchSource, /duckduckgo\\\.com\$/, 'blocked search hosts should not use suffix regexes that match attacker-controlled hostnames');
+assert.equal(htmlToPlainText('<p>Director&nbsp;&amp;&nbsp;Ops</p>'), 'Director & Ops');
+assert.equal(htmlToPlainText('&amp;lt;script&amp;gt;alert(1)&amp;lt;/script&amp;gt;'), '&lt;script&gt;alert(1)&lt;/script&gt;');
 
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-scan-quality-'));
 try {

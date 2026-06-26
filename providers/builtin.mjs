@@ -1,27 +1,9 @@
 // @ts-check
 /** @typedef {import('./_types.js').Provider} Provider */
 
-function htmlDecode(value) {
-  return String(value || '')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#x2F;/gi, '/')
-    .replace(/&#x2B;/gi, '+')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
-}
+import { decodeHtmlEntities, htmlToPlainText } from './_html_text.mjs';
 
-function stripTags(value) {
-  return htmlDecode(String(value || '')
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<[^>]+>/g, ' '))
-    .replace(/\s+/g, ' ')
-    .trim();
-}
+const stripTags = htmlToPlainText;
 
 function absoluteBuiltInUrl(url) {
   if (!url) return '';
@@ -68,7 +50,7 @@ function jobsFromJsonLd(html, entry, limit) {
   for (const script of html.matchAll(/<script[^>]+type="application\/ld(?:\+|&#x2B;)json"[^>]*>([\s\S]*?)<\/script>/gi)) {
     let parsed;
     try {
-      parsed = JSON.parse(htmlDecode(script[1]));
+      parsed = JSON.parse(decodeHtmlEntities(script[1]));
     } catch {
       continue;
     }

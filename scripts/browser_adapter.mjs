@@ -72,7 +72,6 @@ export function safeLog(text) {
   const suppressedLaunchMarker = 'Details suppressed; browser launch command and profile path were omitted from Suitor logs.';
   let value = String(text || '').replace(/\u001b\[[0-9;]*m/g, '');
   value = value
-    .replace(/\bSuitor\b/g, 'Suitor')
     .replace(/\.suitor-runtime/gi, '[runtime]')
     .replaceAll(PROFILE_ROOT, '[profile-root]')
     .replaceAll(RUNTIME_ROOT, '[runtime-root]')

@@ -1,20 +1,14 @@
 // @ts-check
 /** @typedef {import('./_types.js').Provider} Provider */
 
+import { decodeHtmlEntities, htmlToPlainText } from './_html_text.mjs';
+
 function decode(value) {
-  return String(value || '')
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1')
-    .replace(/&nbsp;/gi, ' ')
-    .replace(/&amp;/gi, '&')
-    .replace(/&quot;/gi, '"')
-    .replace(/&#39;/gi, "'")
-    .replace(/&lt;/gi, '<')
-    .replace(/&gt;/gi, '>')
-    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+  return decodeHtmlEntities(String(value || '').replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, '$1'));
 }
 
 function stripTags(value) {
-  return decode(value).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
+  return htmlToPlainText(decode(value));
 }
 
 function tag(block, name) {
