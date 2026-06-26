@@ -1544,6 +1544,7 @@ async function saveMasterResumeUpload({ name, dataUrl, updateKind = '', notes = 
     version += 1;
     filePath = resolve(PROFILE_ROOT, `${CANDIDATE_NAME} - Master Resume v${version}${ext}`);
   }
+  if (!isUnder(filePath, PROFILE_ROOT)) throw new Error('Master resume upload path escaped the profile root.');
   writeBufferAtomic(filePath, Buffer.from(match[2], 'base64'));
   let textPath = '';
   if (ext === '.pdf') textPath = await extractPdfText(filePath);
@@ -1684,6 +1685,7 @@ async function saveAssessmentUpload({ name, dataUrl }) {
   if (!match) throw new Error('Expected base64 dataUrl.');
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const filePath = resolve(ASSESSMENTS_ROOT, `${stamp}-${cleanName}`);
+  if (!isUnder(filePath, ASSESSMENTS_ROOT)) throw new Error('Assessment upload path escaped the assessments folder.');
   writeBufferAtomic(filePath, Buffer.from(match[2], 'base64'));
   let textPath = '';
   if (ext === '.pdf') {
@@ -3611,6 +3613,7 @@ async function handleApi(req, res, pathname) {
     const kind = mime.startsWith('image/') ? 'image' : 'file';
     const id = `${Date.now()}-${name}`;
     const filePath = resolve(UPLOAD_ROOT, id);
+    if (!isUnder(filePath, UPLOAD_ROOT)) return send(res, 400, { error: 'Upload path escaped the upload folder.' });
     writeBufferAtomic(filePath, Buffer.from(match[2], 'base64'));
     let textPath = '';
     if (name.toLowerCase().endsWith('.pdf')) {
