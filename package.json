@@ -1,6 +1,6 @@
 {
   "name": "suitor",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "Local-first, self-hosted job-search assistant with profile intake, scanning, tracking, and tailored draft generation.",
   "private": false,
   "scripts": {
