@@ -185,6 +185,16 @@ const authFailures = new Map();
 function localClaudeEnv() {
   return {
     ...process.env,
+    SUITOR_CONFIG_DIR: config.configDir,
+    SUITOR_PROFILE_ROOT: PROFILE_ROOT,
+    SUITOR_RUNTIME_ROOT: DATA_ROOT,
+    SUITOR_ASSESSMENTS_ROOT: ASSESSMENTS_ROOT,
+    SUITOR_PORTALS_PATH: resolve(PROFILE_ROOT, 'portals.yml'),
+    SUITOR_PERSON_KEY: PERSON_KEY,
+    SUITOR_CANDIDATE_NAME: CANDIDATE_NAME,
+    SUITOR_CANDIDATE_FIRST: CANDIDATE_FIRST,
+    SUITOR_CANDIDATE_INITIALS: CANDIDATE_INITIALS,
+    SUITOR_ASSISTANT_NAME: ASSISTANT_NAME,
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
     DISABLE_TELEMETRY: '1',
     OTEL_SDK_DISABLED: 'true',
@@ -4872,7 +4882,7 @@ function streamLocalAction(userMessage, action, res) {
 
 function streamProcess(command, args, res) {
   streamHeaders(res);
-  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', chunk => res.write(chunk.toString()));
   child.stderr.on('data', chunk => res.write(chunk.toString()));
   child.on('close', code => {
