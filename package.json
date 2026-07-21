@@ -41,6 +41,6 @@
   "dependencies": {
     "dotenv": "17.4.2",
     "js-yaml": "4.3.0",
-    "playwright": "1.60.0"
+    "playwright": "1.61.1"
   }
 }
