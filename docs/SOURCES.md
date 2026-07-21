@@ -26,6 +26,8 @@ Use LinkedIn carefully and at human pace. Prefer API/feed providers for volume.
 
 The wizard can save target companies and RSS feeds. Generated `portals.yml` lives in the profile root and is read by `scan.mjs`.
 
+Roles found through referrals, recruiters, or outside research can be saved in the Capture workspace. A capture is local source memory, not a network provider: Suitor stores the supplied metadata and text without fetching the URL automatically.
+
 ## Calendar Export
 
 The calendar connector is local-only. It exports scheduled interviews from the local SQLite database as an ICS file at `/api/calendar/interviews.ics`. It does not connect to a calendar account or upload events; import the file into your calendar app yourself.

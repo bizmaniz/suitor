@@ -12,6 +12,8 @@ const state = {
   scanChatEvaluations: readScanChatEvaluations(),
   scanDecisions: [],
   assessments: [],
+  captures: [],
+  learningSummary: null,
   masterResume: null,
   meta: {
     candidateFirst: 'Candidate',
@@ -82,8 +84,25 @@ const els = {
   disconnectLinkedInBtn: $('#disconnectLinkedInBtn'),
   backupDbBtn: $('#backupDbBtn'),
   emailImportText: $('#emailImportText'),
+  emailImportCompany: $('#emailImportCompany'),
+  emailImportRole: $('#emailImportRole'),
+  emailImportResult: $('#emailImportResult'),
   importEmailBtn: $('#importEmailBtn'),
   clearEmailImportsBtn: $('#clearEmailImportsBtn'),
+  captureCompany: $('#captureCompany'),
+  captureRole: $('#captureRole'),
+  captureUrl: $('#captureUrl'),
+  captureSource: $('#captureSource'),
+  captureText: $('#captureText'),
+  captureJobBtn: $('#captureJobBtn'),
+  captureResult: $('#captureResult'),
+  captureList: $('#captureList'),
+  refreshCapturesBtn: $('#refreshCapturesBtn'),
+  refreshLearningBtn: $('#refreshLearningBtn'),
+  learningStats: $('#learningStats'),
+  learningOutcomes: $('#learningOutcomes'),
+  learningSources: $('#learningSources'),
+  learningDecisions: $('#learningDecisions'),
   assessmentInput: $('#assessmentInput'),
   assessmentList: $('#assessmentList'),
   assessmentRoot: $('#assessmentRoot'),
@@ -236,6 +255,82 @@ function renderAssessments(files = state.assessments) {
       ${file.downloadPath ? `<a href="/api/download?path=${encodeURIComponent(file.downloadPath)}" target="_blank" rel="noreferrer">Open</a>` : ''}
     </div>
   `).join('');
+}
+
+function renderCaptures(captures = state.captures) {
+  state.captures = Array.isArray(captures) ? captures : [];
+  if (!els.captureList) return;
+  if (!state.captures.length) {
+    els.captureList.innerHTML = '<div class="empty-mini">No manual roles captured yet.</div>';
+    return;
+  }
+  els.captureList.innerHTML = state.captures.map(capture => `
+    <article class="capture-item">
+      <div>
+        <strong>${escapeHtml([capture.role, capture.company].filter(Boolean).join(' - ') || 'Captured role')}</strong>
+        <span>${escapeHtml([capture.source, capture.createdAt ? new Date(capture.createdAt).toLocaleString() : ''].filter(Boolean).join(' / '))}</span>
+        <small>${escapeHtml(capture.notes || capture.jdTextExcerpt || 'No notes saved.')}</small>
+      </div>
+      <div class="capture-item-actions">
+        ${capture.url ? `<a class="button-secondary compact" href="${escapeHtml(capture.url)}" target="_blank" rel="noreferrer">Open</a>` : ''}
+        <button class="button-secondary compact" type="button" data-delete-capture="${escapeHtml(capture.id)}">Remove</button>
+      </div>
+    </article>
+  `).join('');
+  $$('[data-delete-capture]').forEach(button => button.addEventListener('click', async () => {
+    if (!confirm('Remove this capture from profile memory?')) return;
+    const response = await api(`/api/captures/${encodeURIComponent(button.dataset.deleteCapture)}`, {
+      method: 'DELETE',
+      body: JSON.stringify({}),
+    });
+    renderCaptures(response.captures || []);
+    showToast('Capture removed');
+  }));
+}
+
+function learningRows(entries = [], emptyText = 'No signal yet.') {
+  if (!entries.length) return `<div class="empty-mini">${escapeHtml(emptyText)}</div>`;
+  return entries.map(entry => {
+    const label = entry.label || entry.name || entry.source || entry.title || entry.decision || 'Unknown';
+    const value = entry.value ?? entry.count ?? entry.total ?? '';
+    const detail = entry.detail || entry.reason || '';
+    return `
+      <div class="learning-row">
+        <div><strong>${escapeHtml(label)}</strong>${detail ? `<small>${escapeHtml(detail)}</small>` : ''}</div>
+        <span>${escapeHtml(value)}</span>
+      </div>
+    `;
+  }).join('');
+}
+
+function renderLearningInsights(payload = state.learningSummary) {
+  state.learningSummary = payload || null;
+  if (!els.learningStats || !payload) return;
+  const tracker = payload.tracker || {};
+  const decisions = payload.scanDecisions || {};
+  const statusCounts = tracker.statusCounts || {};
+  const stats = [
+    ['Applications', tracker.totalCards || 0, 'Tracked roles'],
+    ['Still Alive', (statusCounts.submitted || 0) + (statusCounts.interviewing || 0) + (statusCounts.accepted_or_offer || 0), 'Submitted, interviewing, or offer'],
+    ['Decisions', decisions.totalDecisions || 0, 'Profile-local scan memory'],
+    ['Jobs Seen', payload.sourceHistory?.totalRows || 0, 'Quick-scan source history'],
+  ];
+  els.learningStats.innerHTML = stats.map(([label, value, detail]) => `
+    <div class="learning-stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong><small>${escapeHtml(detail)}</small></div>
+  `).join('');
+
+  const outcomes = Object.entries(statusCounts)
+    .map(([label, value]) => ({ label: label.replaceAll('_', ' '), value }))
+    .sort((a, b) => Number(b.value) - Number(a.value));
+  const sources = (tracker.sourceCounts || []).map(item => ({ label: item.name || item.key || item.source, value: item.count || item.total }));
+  const recent = (decisions.recentDecisions || []).slice(0, 12).map(item => ({
+    label: item.title || item.decision,
+    value: item.decision || '',
+    detail: [item.source, item.reason].filter(Boolean).join(' / '),
+  }));
+  els.learningOutcomes.innerHTML = learningRows(outcomes, 'Application outcomes will appear after tracker activity.');
+  els.learningSources.innerHTML = learningRows(sources, 'Source patterns will appear after scans or applications.');
+  els.learningDecisions.innerHTML = learningRows(recent, 'Durable pass, submitted, and close-out decisions will appear here.');
 }
 
 function renderMasterResume(payload = state.masterResume) {
@@ -413,8 +508,8 @@ function renderConnections(connections = {}) {
   const boards = connections.targetCompanies?.generatedBoards || [];
   els.connectionsList.innerHTML = `
     <div class="connection-row">
-      <div><strong>Scanned-jobs database</strong><span>${escapeHtml(connections.database?.path || 'Local SQLite database')}</span></div>
-      <small>${Number(connections.database?.jobCount || 0)} jobs / ${Number(connections.database?.applicationCount || 0)} applications</small>
+      <div><strong>Scanned-jobs database</strong><span>Profile-local SQLite storage</span></div>
+      <small>${Number(connections.database?.jobCount || 0)} jobs / ${Number(connections.database?.applicationCount || 0)} applications / ${Number(connections.database?.captureCount || 0)} captures</small>
     </div>
     <div class="connection-row">
       <div><strong>LinkedIn</strong><span>${escapeHtml(connections.linkedin?.dataStored || 'Manual browser session only')}</span></div>
@@ -1938,7 +2033,7 @@ function applyMeta(data) {
   $('#lockedTarget').textContent = data.lockedTarget || 'Locked Target';
   $('#compSummary').textContent = data.compSummary || 'Comp floor';
   $('#compDetail').textContent = data.compDetail || '';
-  $('#locationSummary').textContent = data.locationSummary || 'Atlanta metro or remote';
+  $('#locationSummary').textContent = data.locationSummary || 'Location preferences not set';
   $('#heroSubcopy').textContent = `Track what is submitted, what is ready, and what needs ${state.meta.candidateFirst}'s next decision.`;
   $('#scanExplainer').textContent = `Quick Scan does the fast ATS pull and tracker dedupe. Run Verified Scan direct-fetches each shortlisted URL, scores it against ${state.meta.candidateFirst}'s locked profile, and saves the report.`;
   $('#assistantName').textContent = state.meta.assistantName;
@@ -2222,12 +2317,12 @@ async function bootstrap() {
     renderApplications(data.trackerCards || []);
     renderFiles(data.files || []);
     renderAssessments(data.assessments || []);
+    renderCaptures(data.captures || []);
+    renderLearningInsights(data.learningSummary || null);
     renderMasterResume(data.masterResume || null);
     renderBrowserStatus(data.browser || {});
     renderConnections(data.connections || {});
-    if (els.assessmentRoot && data.assessmentsRoot) {
-      els.assessmentRoot.textContent = `PDF and Word assessments save to ${data.assessmentsRoot}. The assistant uses them as soft job-fit context.`;
-    }
+    if (els.assessmentRoot) els.assessmentRoot.textContent = 'PDF and Word assessments stay inside this profile and are used only as soft job-fit context.';
     els.resumePreview.value = data.resumePreview || '';
     updateTailorState();
     applyOnboardingGates(state.onboarding);
@@ -2437,20 +2532,25 @@ function currentViewContext() {
 }
 
 function activateView(view) {
-  state.activeView = view;
-  localStorage.setItem('activeView', view);
-  $$('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.view === view));
-  $$('.view').forEach(pane => pane.classList.remove('active'));
-  $(`#${view}View`).classList.add('active');
   const titles = {
     applications: ['Applications', 'Career Command Center'],
     scans: ['Scans', 'Opportunity Scanner'],
-    resume: ['Resume Library', 'Resume Studio'],
-    settings: ['Settings', 'Reference Library'],
+    capture: ['Capture', 'Outside Activity'],
+    resume: ['Resume Studio', 'Resume Studio'],
+    learning: ['Learning Insights', 'Search Learning'],
+    assessments: ['Assessments', 'Workplace Context'],
+    reference: ['Reference Library', 'Profile Rules'],
+    settings: ['Settings', 'System Controls'],
   };
-  els.viewEyebrow.textContent = titles[view][0];
-  els.viewTitle.textContent = titles[view][1];
-  els.chatContext.textContent = `Context: ${titles[view][0]}`;
+  const nextView = titles[view] ? view : 'applications';
+  state.activeView = nextView;
+  localStorage.setItem('activeView', nextView);
+  $$('.nav-item').forEach(btn => btn.classList.toggle('active', btn.dataset.view === nextView));
+  $$('.view').forEach(pane => pane.classList.remove('active'));
+  $(`#${nextView}View`)?.classList.add('active');
+  els.viewEyebrow.textContent = titles[nextView][0];
+  els.viewTitle.textContent = titles[nextView][1];
+  els.chatContext.textContent = `Context: ${titles[nextView][0]}`;
 }
 
 async function refreshFilesOnly() {
@@ -2796,14 +2896,13 @@ els.tailorBtn.addEventListener('click', async () => {
   updateTailorState();
   if (els.tailorBtn.disabled) return;
   const assumptionText = [
-    'Generate package using these canonical assumptions?',
+    'Generate a package from the current profile and master resume?',
     '',
     `Company: ${els.tailorCompany.value.trim()}`,
     `Role: ${els.tailorRole.value.trim()}`,
     '',
-    "Headline: Operator-Builder | Founder's Office & Strategic Operations | AI-Augmented Revenue Systems",
-    'Salesforce framing: pulled in beyond normal role scope to collaborate',
-    'Blocked content scan: generic AI phrasing, unsupported claims, undisclosed personal details, and profile guardrail conflicts.',
+    'Suitor will use only profile-backed facts and the current master resume.',
+    'The output is checked for unsupported claims, private details, and profile guardrail conflicts.',
   ].join('\n');
   if (!confirm(assumptionText)) return;
   const out = addMessage('assistant', '');
@@ -2946,8 +3045,8 @@ els.disconnectLinkedInBtn?.addEventListener('click', async () => {
 });
 
 els.backupDbBtn?.addEventListener('click', async () => {
-  const response = await api('/api/backup', { method: 'POST', body: JSON.stringify({}) });
-  showToast(response.backupPath ? `Backup saved: ${response.backupPath}` : 'Backup saved');
+  await api('/api/backup', { method: 'POST', body: JSON.stringify({}) });
+  showToast('Profile database backup saved');
 });
 
 els.importEmailBtn?.addEventListener('click', async () => {
@@ -2955,11 +3054,18 @@ els.importEmailBtn?.addEventListener('click', async () => {
   if (!message) return showToast('Paste email text first');
   const response = await api('/api/connections/email/import', {
     method: 'POST',
-    body: JSON.stringify({ message }),
+    body: JSON.stringify({
+      message,
+      company: els.emailImportCompany?.value.trim() || '',
+      role: els.emailImportRole?.value.trim() || '',
+    }),
   });
   renderConnections(response.connections || {});
   renderApplications(response.trackerCards || state.trackerCards);
   els.emailImportText.value = '';
+  if (els.emailImportCompany) els.emailImportCompany.value = '';
+  if (els.emailImportRole) els.emailImportRole.value = '';
+  if (els.emailImportResult) els.emailImportResult.textContent = response.message || 'Email imported.';
   showToast(response.message || 'Email imported');
 });
 
@@ -2968,6 +3074,45 @@ els.clearEmailImportsBtn?.addEventListener('click', async () => {
   const response = await api('/api/connections/email/clear', { method: 'POST', body: JSON.stringify({}) });
   renderConnections(response.connections || {});
   showToast('Email import history cleared');
+});
+
+els.captureJobBtn?.addEventListener('click', async () => {
+  const payload = {
+    company: els.captureCompany?.value.trim() || '',
+    role: els.captureRole?.value.trim() || '',
+    url: els.captureUrl?.value.trim() || '',
+    source: els.captureSource?.value.trim() || '',
+    jdText: els.captureText?.value.trim() || '',
+  };
+  if (!payload.company || !payload.role) return showToast('Add a company and role');
+  setButtonLoading(els.captureJobBtn, true, 'Saving Capture');
+  try {
+    const response = await api('/api/capture', { method: 'POST', body: JSON.stringify(payload) });
+    renderCaptures(response.captures || []);
+    if (els.captureResult) els.captureResult.textContent = response.message || 'Role saved to profile memory.';
+    [els.captureCompany, els.captureRole, els.captureUrl, els.captureSource, els.captureText].forEach(input => {
+      if (input) input.value = '';
+    });
+    showToast(response.duplicate ? 'Capture updated' : 'Role captured');
+  } finally {
+    setButtonLoading(els.captureJobBtn, false);
+  }
+});
+
+els.refreshCapturesBtn?.addEventListener('click', async () => {
+  const response = await api('/api/captures');
+  renderCaptures(response.captures || []);
+  showToast('Captures refreshed');
+});
+
+els.refreshLearningBtn?.addEventListener('click', async () => {
+  setButtonLoading(els.refreshLearningBtn, true, 'Refreshing');
+  try {
+    renderLearningInsights(await api('/api/learning-summary'));
+    showToast('Learning insights refreshed');
+  } finally {
+    setButtonLoading(els.refreshLearningBtn, false);
+  }
 });
 
 if (localStorage.getItem('theme') === 'dark') document.body.classList.add('dark');

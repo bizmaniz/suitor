@@ -75,6 +75,8 @@ npm start
 
 Open `http://127.0.0.1:8787`, unlock with the generated token from `<profile root>/.suitor-runtime/local.app-token`, and start onboarding. Complete Tier 1 to unlock scanning; keep going through Tier 2 and Tier 3 when you want stronger tailoring and matching.
 
+Use Capture for pasted application emails or roles found outside configured scanners. Learning Insights, Assessments, and Reference Library hold profile knowledge; Settings is reserved for system controls and data management.
+
 ## POSIX Smoke Checklist For Maintainers
 
 Before a release, run this on macOS or Linux:

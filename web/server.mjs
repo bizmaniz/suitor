@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
+import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -886,6 +887,22 @@ function ensureJobDbSchema(db) {
       updated_at TEXT NOT NULL DEFAULT ''
     );
 
+    CREATE TABLE IF NOT EXISTS captures (
+      id TEXT PRIMARY KEY,
+      company TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL DEFAULT '',
+      source TEXT NOT NULL DEFAULT '',
+      jd_text TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      normalized_company TEXT NOT NULL DEFAULT '',
+      normalized_role TEXT NOT NULL DEFAULT '',
+      normalized_url TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT '',
+      deleted_at TEXT NOT NULL DEFAULT ''
+    );
+
     CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(normalized_company, normalized_role, normalized_url);
     CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
     CREATE INDEX IF NOT EXISTS idx_applications_identity ON applications(normalized_company, normalized_role);
@@ -894,14 +911,121 @@ function ensureJobDbSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_application_events_application ON application_events(application_id, event_at);
     CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id, interview_at);
     CREATE INDEX IF NOT EXISTS idx_contacts_application ON contacts(application_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_captures_identity ON captures(normalized_company, normalized_role, normalized_url);
+    CREATE INDEX IF NOT EXISTS idx_captures_active ON captures(deleted_at, updated_at);
   `);
   try { db.prepare('ALTER TABLE interviews ADD COLUMN company TEXT NOT NULL DEFAULT ""').run(); } catch {}
   try { db.prepare('ALTER TABLE interviews ADD COLUMN role TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', '2');
+  db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', '3');
 }
 
 function dbText(value = '') {
   return String(value ?? '').trim();
+}
+
+function captureUrl(value = '') {
+  const raw = dbText(value);
+  if (!raw) return '';
+  let parsed;
+  try {
+    parsed = new URL(raw);
+  } catch {
+    throw new Error('Job URL must be a valid http or https URL.');
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('Job URL must use http or https.');
+  parsed.hash = '';
+  return parsed.toString();
+}
+
+function captureRows() {
+  return jobDb().prepare(`
+    SELECT id, company, role, url, source, jd_text, notes, created_at, updated_at
+    FROM captures
+    WHERE deleted_at = ''
+    ORDER BY updated_at DESC, created_at DESC
+    LIMIT 200
+  `).all().map(row => ({
+    id: row.id,
+    company: row.company,
+    role: row.role,
+    url: row.url,
+    source: row.source,
+    notes: row.notes,
+    jdTextExcerpt: String(row.jd_text || '').replace(/\s+/g, ' ').trim().slice(0, 240),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }));
+}
+
+function saveCapture(input = {}) {
+  const company = dbText(input.company);
+  const role = dbText(input.role);
+  if (!company || !role) throw new Error('Company and role are required.');
+  const url = captureUrl(input.url);
+  const source = dbText(input.source || 'manual-capture').slice(0, 120);
+  const jdText = String(input.jdText || input.visibleText || '').replace(/\u0000/g, '').trim().slice(0, 200_000);
+  const notes = dbText(input.notes).slice(0, 4000);
+  const normalizedCompany = dbIdentity(company);
+  const normalizedRole = dbIdentity(role);
+  const normalizedUrl = dbUrlIdentity(url);
+  const now = new Date().toISOString();
+  const db = jobDb();
+  const existing = db.prepare(`
+    SELECT id FROM captures
+    WHERE normalized_company = ? AND normalized_role = ? AND normalized_url = ?
+    LIMIT 1
+  `).get(normalizedCompany, normalizedRole, normalizedUrl);
+  const id = existing?.id || `capture_${randomUUID()}`;
+  db.prepare(`
+    INSERT INTO captures (
+      id, company, role, url, source, jd_text, notes,
+      normalized_company, normalized_role, normalized_url,
+      created_at, updated_at, deleted_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '')
+    ON CONFLICT(id) DO UPDATE SET
+      company = excluded.company,
+      role = excluded.role,
+      url = excluded.url,
+      source = excluded.source,
+      jd_text = CASE WHEN excluded.jd_text <> '' THEN excluded.jd_text ELSE captures.jd_text END,
+      notes = CASE WHEN excluded.notes <> '' THEN excluded.notes ELSE captures.notes END,
+      normalized_company = excluded.normalized_company,
+      normalized_role = excluded.normalized_role,
+      normalized_url = excluded.normalized_url,
+      updated_at = excluded.updated_at,
+      deleted_at = ''
+  `).run(
+    id, company, role, url, source, jdText, notes,
+    normalizedCompany, normalizedRole, normalizedUrl,
+    now, now,
+  );
+  db.prepare(`
+    INSERT INTO jobs (
+      company, role, title, url, source, jd_text, first_seen_at, last_seen_at,
+      normalized_company, normalized_role, normalized_url
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(normalized_company, normalized_role, normalized_url) DO UPDATE SET
+      company = excluded.company,
+      role = excluded.role,
+      title = excluded.title,
+      url = excluded.url,
+      source = excluded.source,
+      jd_text = CASE WHEN excluded.jd_text <> '' THEN excluded.jd_text ELSE jobs.jd_text END,
+      last_seen_at = excluded.last_seen_at
+  `).run(
+    company, role, `${role} - ${company}`, url, source, jdText, now, now,
+    normalizedCompany, normalizedRole, normalizedUrl,
+  );
+  return { id, duplicate: Boolean(existing) };
+}
+
+function softDeleteCapture(id) {
+  const value = dbText(id);
+  if (!/^capture_[0-9a-f-]{36}$/i.test(value)) throw new Error('Invalid capture identifier.');
+  const result = jobDb().prepare(`
+    UPDATE captures SET deleted_at = ?, updated_at = ? WHERE id = ? AND deleted_at = ''
+  `).run(new Date().toISOString(), new Date().toISOString(), value);
+  return Number(result.changes || 0) > 0;
 }
 
 function csvCell(value = '') {
@@ -1408,12 +1532,14 @@ function connectionStatus() {
   const providers = config.connections?.providers || {};
   let jobCount = 0;
   let applicationCount = 0;
+  let captureCount = 0;
   try {
     jobCount = jobDb().prepare('SELECT COUNT(*) AS count FROM jobs').get()?.count || 0;
     applicationCount = jobDb().prepare('SELECT COUNT(*) AS count FROM applications').get()?.count || 0;
+    captureCount = jobDb().prepare("SELECT COUNT(*) AS count FROM captures WHERE deleted_at = ''").get()?.count || 0;
   } catch {}
   return {
-    database: { enabled: true, status: 'connected', path: JOB_DB_PATH, jobCount, applicationCount },
+    database: { enabled: true, status: 'connected', jobCount, applicationCount, captureCount },
     linkedin: {
       enabled: Boolean(config.connections?.linkedin?.enabled),
       status: existsSync(BROWSER_PROFILE_DIR) ? 'connected' : 'not_set_up',
@@ -1695,6 +1821,7 @@ function dbApplicationToCard(row = {}) {
       'Date submitted': dateText,
       'Comp posted': row.compensation || known.comp || '',
       Location: row.location || known.location || '',
+      Source: row.source || '',
       'Next action': row.next_action || row.notes || '',
       Notes: row.notes || '',
     },
@@ -2833,7 +2960,9 @@ function scanDecisionSource(item = {}) {
 
 function trackerCardSource(card = {}) {
   const fields = card.fields || {};
-  return sourceLabelFromText(fields.Source)
+  const explicitSource = dbText(fields.Source);
+  return sourceLabelFromText(explicitSource)
+    || explicitSource
     || sourceLabelFromText(fields.Notes)
     || sourceLabelFromText(fields['Next action'])
     || sourceLabelFromText(card.title)
@@ -2946,25 +3075,6 @@ function learningSummary() {
 }
 
 function knownRoleMeta(company, role) {
-  const key = `${company} ${role}`.toLowerCase();
-  const rules = [
-    [/miter/, { comp: '$170,000 - $190,000 base / $230,000 - $260,000 OTE', location: 'Remote' }],
-    [/freshpaint/, { comp: '$185,000 - $215,000', location: 'Remote' }],
-    [/opensesame/, { comp: '$180,000 - $200,000', location: 'Remote' }],
-    [/gusto/, { comp: '$195,000 - $230,000 Atlanta band', location: 'Atlanta-listed remote eligible' }],
-    [/ycharts/, { comp: '$150,000 - $205,000', location: 'Remote' }],
-    [/tremendous/, { comp: '$165,000 - $200,000 base / $225,000 - $300,000 OTE', location: 'Remote' }],
-    [/workato/, { comp: '$135,000+ Senior Manager vertical-fit exception', location: 'Remote' }],
-    [/interra/, { comp: 'Undisclosed', location: 'Remote / Boston or NY preferred' }],
-    [/yuno/, { comp: 'Undisclosed', location: 'Remote / Americas time zones' }],
-    [/daylight/, { comp: 'Undisclosed', location: 'Remote' }],
-    [/canals/, { comp: 'Undisclosed', location: 'Remote' }],
-    [/leoforce/, { comp: 'Undisclosed', location: 'Remote' }],
-    [/answerrocket/, { comp: 'Undisclosed', location: 'Remote / Atlanta adjacency' }],
-    [/pandadoc/, { comp: 'Undisclosed', location: 'Remote' }],
-    [/vanilla/, { comp: 'Undisclosed', location: 'Remote' }],
-  ];
-  const staticMatch = rules.find(([pattern]) => pattern.test(key))?.[1] || {};
   const normalizedCompany = dbIdentity(company);
   const normalizedRole = dbIdentity(role);
   let dynamic = {};
@@ -2993,8 +3103,8 @@ function knownRoleMeta(company, role) {
     dynamic = {};
   }
   return {
-    comp: dynamic.comp || staticMatch.comp || '',
-    location: dynamic.location || staticMatch.location || '',
+    comp: dynamic.comp || '',
+    location: dynamic.location || '',
   };
 }
 
@@ -3470,25 +3580,8 @@ User request:
 ${message}`;
 }
 
-function maybeApplyLocalResumeEdit(message) {
-  if (!/shorten\s+the\s+third\s+belay\s+bullet/i.test(message)) return null;
-  if (!existsSync(RESUME_PREVIEW_PATH)) return null;
-  const text = readFileSync(RESUME_PREVIEW_PATH, 'utf-8');
-  const bullets = [...text.matchAll(/^([ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â¢-])\s+(.*)$/gm)];
-  const belayStart = text.indexOf('BELAY Solutions');
-  const gsuStart = text.indexOf('Georgia State University');
-  const belayBullets = bullets.filter(m => m.index > belayStart && (gsuStart === -1 || m.index < gsuStart));
-  const third = belayBullets[2];
-  if (!third) return null;
-  const replacement = `${third[1]} Direct enterprise initiatives across 8 departments and 15-25 stakeholders, aligning execution to executive priorities.`;
-  const updated = text.slice(0, third.index) + replacement + text.slice(third.index + third[0].length);
-  writeTextAtomic(RESUME_PREVIEW_PATH, updated);
-  return { type: 'resume-preview-updated', message: 'I shortened the third BELAY bullet in the resume preview.' };
-}
-
 function isVerifiedScanRequest(message) {
-  return /\b(run|start|do)\b[\s\S]{0,80}\b(fresh|new|verified)?\s*scan\b/i.test(message)
-    || /\bscan\b[\s\S]{0,80}\bDirector of Operations\b/i.test(message);
+  return /\b(run|start|do)\b[\s\S]{0,80}\b(fresh|new|verified)?\s*scan\b/i.test(message);
 }
 
 function moneyRange(text = '') {
@@ -3736,9 +3829,68 @@ function evaluationActionFromAssistantText(userMessage = '', assistantText = '')
   return `\n\n[app-action] ${JSON.stringify(action)}`;
 }
 
+function scoringText(value = '') {
+  if (Array.isArray(value)) return value.map(scoringText).filter(Boolean).join('\n');
+  if (value && typeof value === 'object') return Object.values(value).map(scoringText).filter(Boolean).join('\n');
+  return String(value || '').trim();
+}
+
+function meaningfulScoringTerms(value = '') {
+  const stop = new Set([
+    'about', 'after', 'also', 'because', 'before', 'being', 'candidate', 'company', 'could',
+    'from', 'have', 'into', 'more', 'role', 'should', 'that', 'their', 'there', 'these',
+    'they', 'this', 'through', 'with', 'work', 'would', 'your',
+  ]);
+  return [...new Set(scoringText(value).toLowerCase().split(/[^a-z0-9+#.]+/)
+    .filter(term => term.length >= 3 && !stop.has(term)))];
+}
+
+function profileAxisScore(jobText, profileText, weight) {
+  const reference = meaningfulScoringTerms(profileText).slice(0, 40);
+  if (!reference.length) return Math.round(weight * 0.5);
+  const jobTerms = new Set(meaningfulScoringTerms(jobText));
+  const hits = reference.filter(term => jobTerms.has(term)).length;
+  const ratio = Math.min(1, hits / Math.min(10, reference.length));
+  return Math.round(weight * (0.3 + ratio * 0.7));
+}
+
+function normalizedFilterPhrases(value = '') {
+  return (Array.isArray(value) ? value : splitIntakeList(value))
+    .map(item => String(item || '').trim().toLowerCase())
+    .filter(item => item.length >= 3)
+    .slice(0, 100);
+}
+
+function matchedProfilePhrases(text, values) {
+  const haystack = String(text || '').toLowerCase();
+  return normalizedFilterPhrases(values).filter(phrase => haystack.includes(phrase));
+}
+
+function configuredProfileCompFloor(profile = readProfileJson()) {
+  const explicit = Number(process.env.SUITOR_COMP_FLOOR || profile?.compensation?.baseFloor || profile?.compensation?.floor);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  const parsed = moneyRange(scoringText(profile?.compensation));
+  return parsed?.min || 0;
+}
+
+function profileScoringContext() {
+  const profile = readProfileJson();
+  const hardFilters = profile?.scoring?.hardFilters || profile?.dealbreakers || {};
+  return {
+    profile,
+    role: scoringText([profile?.targetRoleDirection, profile?.roleEvidence, profile?.strengths]),
+    environment: scoringText([profile?.personalityWorkflow, profile?.managerCulture, profile?.industryFit, profile?.companyFit]),
+    lifestyle: scoringText(profile?.logistics),
+    growth: scoringText([profile?.careerDirection, profile?.energizers, profile?.strengths]),
+    drainers: scoringText(profile?.drainers),
+    automaticRejections: normalizedFilterPhrases(hardFilters.automaticRejections || profile?.dealbreakers?.automaticRejections),
+    excludeKeywords: normalizedFilterPhrases(hardFilters.excludeKeywords || profile?.dealbreakers?.excludeKeywords),
+    manualReview: normalizedFilterPhrases(hardFilters.manualReviewCriteria || profile?.dealbreakers?.manualReviewCriteria),
+  };
+}
+
 function localJobEvaluation(message = '') {
   const text = String(message || '');
-  const lower = text.toLowerCase();
   const textWithoutUrls = text.replace(/https?:\/\/[^\s)]+/gi, '').trim();
   const jdLike = text.length > 900
     || /\b(job description|about the role|responsibilities|requirements|qualifications|what you'?ll do|about you)\b/i.test(text)
@@ -3749,67 +3901,41 @@ function localJobEvaluation(message = '') {
 
   const parsed = inferCompanyAndRoleFromText(text);
   const salary = moneyRange(text);
-  const roleBits = [
-    /\bchief of staff\b/i.test(text) ? 8 : 0,
-    /\b(founder'?s office|office of the ceo|executive operations|strategic operations|strategic initiatives)\b/i.test(text) ? 8 : 0,
-    /\b(cross-functional|operating cadence|executive leverage|decision support|sponsor|principal|founder-led|ceo)\b/i.test(text) ? 6 : 0,
-    /\b(partnerships|alliances|business development|channel)\b/i.test(text) ? 3 : 0,
-    /\b(revenue operations|revops|gtm operations)\b/i.test(text) ? 2 : 0,
+  const context = profileScoringContext();
+  const roleFit = profileAxisScore(text, context.role, 25);
+  const companyFit = profileAxisScore(text, context.environment, 20);
+  const compFloor = configuredProfileCompFloor(context.profile);
+  const compFit = !compFloor
+    ? 10
+    : !salary
+      ? 10
+      : salary.max < compFloor
+        ? 0
+        : salary.min >= compFloor
+          ? 20
+          : 14;
+  const geoFit = profileAxisScore(text, context.lifestyle, 15);
+  const growthFit = profileAxisScore(text, context.growth, 10);
+  const hardMatches = [
+    ...matchedProfilePhrases(text, context.automaticRejections),
+    ...matchedProfilePhrases(text, context.excludeKeywords),
   ];
-  let roleFit = Math.min(30, 10 + roleBits.reduce((sum, value) => sum + value, 0));
-  if (/\b(account executive|sdr|bdr|customer success|product marketing|engineering manager|director of engineering|cto)\b/i.test(text)) roleFit -= 8;
-  if (/\b(admin|administrative assistant|calendar management|expense reports)\b/i.test(text) && !/\bstrategic\b/i.test(text)) roleFit -= 8;
-  roleFit = Math.max(4, Math.min(30, roleFit));
-
-  let companyFit = 12;
-  if (/\b(founder-led|series a|series b|early stage|30[- ]?300|50[- ]?200|startup|growth-stage)\b/i.test(text)) companyFit += 5;
-  if (/\b(vertical saas|professional services|accounting|cpa|fintech|m&a|deal|b2b|ai)\b/i.test(text)) companyFit += 3;
-  if (/\b(fortune 500|f500|large enterprise|public sector|government)\b/i.test(text)) companyFit -= 3;
-  companyFit = Math.max(3, Math.min(20, companyFit));
-
-  const isCaliforniaRole = /\b(california|los angeles|san francisco|santa monica|bay area|palo alto|san diego|redwood city|san jose|menlo park|mountain view|foster city)\b/i.test(text);
-  const defaultFloor = Number(process.env.SUITOR_COMP_FLOOR || readProfileJson()?.compensation?.baseFloor || 145000);
-  const locationFloor = Number(process.env.SUITOR_RELOCATION_COMP_FLOOR || readProfileJson()?.compensation?.relocationFloor || defaultFloor);
-  let compFit = 6;
-  if (!salary) compFit = 8;
-  else if (salary.max < (isCaliforniaRole ? locationFloor : defaultFloor)) compFit = 2;
-  else if (salary.max < defaultFloor + 40000) compFit = 7;
-  else if (salary.min <= 220000 || salary.max >= 220000) compFit = 11;
-  compFit = Math.max(0, Math.min(12, compFit));
-
-  let geoFit = 8;
-  if (/\b(remote|distributed|work from anywhere|united states)\b/i.test(text)) geoFit = 13;
-  if (/\b(atlanta|alpharetta|georgia|ga)\b/i.test(text)) geoFit += 3;
-  if (isCaliforniaRole) geoFit = Math.max(geoFit, 10);
-  if (/\b(onsite|on-site|hybrid|in office|in-office)\b/i.test(text) && !/\b(remote|atlanta|georgia|california|los angeles|san francisco|santa monica|bay area|palo alto|san diego|redwood city|san jose|menlo park|mountain view|foster city)\b/i.test(text)) geoFit -= 6;
-  if (/\b(new york|nyc|boston|seattle|chicago|denver|austin)\b/i.test(text) && /\b(onsite|on-site|hybrid|in office|in-office)\b/i.test(text)) geoFit -= 3;
-  geoFit = Math.max(0, Math.min(13, geoFit));
-
-  let growthFit = 5;
-  if (/\b(build|zero to one|0-to-1|ambiguity|scale|operating system|process|systems|workflow|automation|ai)\b/i.test(text)) growthFit += 4;
-  if (/\b(launchpad|senior operating leadership|right hand|trusted operator)\b/i.test(text)) growthFit += 2;
-  growthFit = Math.max(1, Math.min(10, growthFit));
-
-  let riskFit = 12;
-  const riskNotes = [];
-  const riskChecks = [
-    [/\b(mbb|bain|mckinsey|bcg|investment banking|private equity associate|mba required)\b/i, 'pedigree gate'],
-    [/\b(strong pe rolodex|pe network|0-to-1 pe channel)\b/i, 'PE rolodex requirement'],
-    [/\b(engineering organization|director of engineering|vp engineering|cto background)\b/i, 'engineering-org leadership gate'],
-    [/\b(healthcare|clinical|payer|provider|ehr|pbm)\b/i, 'healthcare vertical gap'],
-    [/\b(crypto|web3|blockchain|cannabis|gambling|adult entertainment|payday|subprime)\b/i, 'industry caution'],
-  ];
-  for (const [pattern, note] of riskChecks) {
-    if (pattern.test(text)) {
-      riskFit -= 2;
-      riskNotes.push(note);
-    }
-  }
-  riskFit = Math.max(1, Math.min(15, riskFit));
-
-  const total = Math.max(0, Math.min(100, Math.round(roleFit + companyFit + compFit + geoFit + growthFit + riskFit)));
+  const manualMatches = matchedProfilePhrases(text, context.manualReview);
+  const drainerMatches = matchedProfilePhrases(text, context.drainers);
+  const riskNotes = [...new Set([
+    ...hardMatches.map(item => `hard filter: ${item}`),
+    ...manualMatches.map(item => `manual review: ${item}`),
+    ...drainerMatches.map(item => `possible drainer: ${item}`),
+  ])];
+  const riskFit = hardMatches.length ? 0 : manualMatches.length || drainerMatches.length ? 5 : 10;
+  let total = Math.max(0, Math.min(100, Math.round(roleFit + companyFit + compFit + geoFit + growthFit + riskFit)));
+  if (hardMatches.length) total = Math.min(total, Number(context.profile?.scoring?.thresholds?.reject_below || 65) - 1);
   const floor = configuredShortlistFloor();
-  const decision = total >= floor
+  const decision = hardMatches.length
+    ? 'Pass. A configured hard filter matched this role.'
+    : manualMatches.length
+      ? 'Needs Decision. A configured manual-review criterion matched this role.'
+    : total >= floor
     ? `Shortlist. This clears the ${floor}+ package/review threshold.`
     : total >= 65
       ? 'Needs Decision. Worth retaining only if a specific strategic reason or warm intro exists.'
@@ -3817,34 +3943,38 @@ function localJobEvaluation(message = '') {
   const caveats = [];
   if (salary) caveats.push(`Comp parsed around $${Math.round(salary.min / 1000)}K-$${Math.round(salary.max / 1000)}K.`);
   else caveats.push('Comp not clearly posted.');
-  if (isCaliforniaRole) caveats.push(`California/relocation roles are scoreable with the configured location floor of $${Math.round(locationFloor / 1000)}K.`);
+  if (compFloor) caveats.push(`Configured compensation floor: $${Math.round(compFloor / 1000)}K.`);
   if (riskNotes.length) caveats.push(`Risk flags: ${[...new Set(riskNotes)].join(', ')}.`);
-  if (/\b(founder|ceo|office of the ceo|chief of staff|strategic operations)\b/i.test(text)) caveats.push('Operating-shape signal is present.');
 
+  const actionDecision = localEvaluationDecision({ hardMatches, manualMatches, total, floor });
   const actionLine = !parsedJobIdentityIsUsable(parsed)
     ? '\n\nScan card not saved because the company and role title could not be parsed cleanly from the pasted text. Add a `Company:` and `Role:` line if you want this persisted.'
-    : total < floor
-      ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'passed', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: `Local JD evaluation scored below the ${floor} shortlist floor.` })}`
-      : `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'shortlisted', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: `Local JD evaluation cleared the ${floor} shortlist floor.` })}`;
+    : actionDecision === 'manual_review'
+      ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'manual_review', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: 'Local JD evaluation matched a configured manual-review criterion.' })}`
+      : actionDecision === 'passed'
+        ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'passed', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: hardMatches.length ? 'Local JD evaluation matched a configured hard filter.' : `Local JD evaluation scored below the ${floor} shortlist floor.` })}`
+        : `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'shortlisted', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: `Local JD evaluation cleared the ${floor} shortlist floor.` })}`;
 
   return [
     `Score: ${total}/100`,
     '',
-    `Role fit: ${roleFit}/30`,
+    `Role fit: ${roleFit}/25`,
     `Company/environment fit: ${companyFit}/20`,
-    `Compensation fit: ${compFit}/12`,
-    `Geography/lifestyle fit: ${geoFit}/13`,
+    `Compensation fit: ${compFit}/20`,
+    `Geography/lifestyle fit: ${geoFit}/15`,
     `Growth/platform fit: ${growthFit}/10`,
-    `Risk fit: ${riskFit}/15`,
+    `Risk fit: ${riskFit}/10`,
     '',
     `Decision: ${decision}`,
     '',
     'Why:',
     ...caveats.map(item => `- ${item}`),
     '',
-    total >= floor
+    total >= floor && !hardMatches.length && !manualMatches.length
       ? `Next action: review/package this role, then use the normal ${ASSISTANT_NAME} tailoring flow if you decide to apply.`
-      : 'Next action: no package. I am marking this out of active scan flow if it matches a current unresolved scan card.',
+      : manualMatches.length
+        ? 'Next action: review the matched criterion before deciding whether to package this role.'
+        : 'Next action: no package. I am marking this out of active scan flow if it matches a current unresolved scan card.',
     actionLine,
   ].join('\n');
 }
@@ -3971,6 +4101,7 @@ async function handleApi(req, res, pathname) {
       files: listApplicationFiles(),
       assessments: assessmentFiles(),
       assessmentsRoot: ASSESSMENTS_ROOT,
+      captures: captureRows(),
       masterResume: masterResumeStatePayload(),
       scanState: readScanState(),
       browser: readBrowserStatus(),
@@ -4109,6 +4240,35 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/learning-summary' && req.method === 'GET') {
     return send(res, 200, learningSummary());
+  }
+
+  if (pathname === '/api/captures' && req.method === 'GET') {
+    return send(res, 200, { captures: captureRows() });
+  }
+
+  if (pathname === '/api/capture' && req.method === 'POST') {
+    try {
+      const body = JSON.parse(await readBody(req) || '{}');
+      const saved = saveCapture(body);
+      return send(res, 200, {
+        ok: true,
+        ...saved,
+        captures: captureRows(),
+        message: saved.duplicate ? 'Existing capture updated.' : 'Role saved to profile memory.',
+      });
+    } catch (err) {
+      return send(res, 400, { error: err.message });
+    }
+  }
+
+  if (/^\/api\/captures\/[^/]+$/.test(pathname) && req.method === 'DELETE') {
+    try {
+      const id = decodeURIComponent(pathname.slice('/api/captures/'.length));
+      if (!softDeleteCapture(id)) return send(res, 404, { error: 'Capture not found.' });
+      return send(res, 200, { ok: true, captures: captureRows() });
+    } catch (err) {
+      return send(res, 400, { error: err.message });
+    }
   }
 
   if (pathname === '/api/assessments' && req.method === 'GET') {
@@ -4686,8 +4846,6 @@ async function handleApi(req, res, pathname) {
     const message = String(body.message || '').trim();
     if (!message) return send(res, 400, { error: 'Message is required' });
     if (isVerifiedScanRequest(message)) return streamVerifiedScanChat(message, res);
-    const localEdit = maybeApplyLocalResumeEdit(message);
-    if (localEdit) return streamLocalAction(message, localEdit, res);
     const prompt = buildAgentPrompt({ message, view: body.view, attachments: body.attachments });
     if ((config.llm?.provider || 'openai') === 'anthropic') {
       return streamClaude(prompt, res, { displayUserMessage: message });
@@ -4871,15 +5029,6 @@ function streamCodex(message, res, options = {}) {
   });
 }
 
-function streamLocalAction(userMessage, action, res) {
-  streamHeaders(res);
-  const message = `${action.message}\n\n[app-action] ${JSON.stringify(action)}`;
-  appendChatLog({ role: 'user', at: new Date().toISOString(), message: userMessage });
-  appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message });
-  res.write(`${message}\n\n[process exited with code 0]\n`);
-  res.end();
-}
-
 function streamProcess(command, args, res) {
   streamHeaders(res);
   const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
@@ -5017,46 +5166,32 @@ function streamTailorPackage(payload, res) {
 
 function sampleResumeDraft(company, role, jdText) {
   return [
-    '# Sample Candidate',
+    '# Draft Resume - Review Required',
     '',
-    'Metro area | 555-0100 | candidate@example.com | linkedin.com/in/candidate',
+    'This fallback draft contains placeholders because no verified master-resume content was available.',
     '',
-    "## Operator-Builder | Founder's Office & Strategic Operations | AI-Augmented Revenue Systems",
+    `## Target Role: ${role} at ${company}`,
     '',
     '## Professional Summary',
     '',
-    `Operator-builder aligned to ${role} at ${company}, with a background spanning partnership architecture, strategic operations, executive-extension work, and AI-augmented revenue systems.`,
+    '[Add a profile-backed summary using only verified experience and outcomes.]',
     '',
     '## Core Competencies',
     '',
-    '- Founder\'s Office and Strategic Operations',
-    '- Partnership architecture from first principles',
-    '- AI-augmented revenue systems',
-    '- Multi-stakeholder enterprise trust',
-    '- Cross-functional execution cadence',
+    '- [Profile-backed competency]',
+    '- [Profile-backed competency]',
+    '- [Profile-backed competency]',
     '',
     '## Professional Experience',
     '',
-    '### Chief of Staff to the CEO | Example Advisory LLC | 2025 - Present',
+    '### [Verified role] | [Verified employer] | [Verified dates]',
     '',
-    '- Built an AI-assisted operating layer that protects executive attention by turning inbound requests, meeting notes, CRM history, transcripts, and follow-up obligations into governed triage, morning briefings, relationship intelligence, and decision-ready next steps.',
-    '- Pulled in beyond normal role scope to collaborate on the Salesforce-to-HubSpot migration after operating Salesforce as a daily user from May 2025 through January 2026.',
-    '- Lead M&A origination and advisory conversations with CPA firm owners, founders, managing partners, and PE platform stakeholders.',
-    '',
-    '### Director of Strategic Partnerships | Example Growth Group | 2013 - 2025',
-    '',
-    '- Originated the first ever denomination-wide partnership in company history, scaling to 2,000+ locations across every U.S. state and Canada.',
-    '- Built a structured engagement lifecycle: discovery, pilot, expansion, multi-year renewal.',
-    '- Sustained relationship continuity across multiple leadership transitions.',
-    '',
-    '### Hope Industrial | 2008 - 2013',
-    '',
-    '- Delivered 98% close rate, $240K weekly revenue, and five consecutive years exceeding quota with F100 industrial accounts.',
-    '- Sold through and to OEMs, system integrators, and end-users simultaneously.',
+    '- [Verified action, scope, and measurable outcome.]',
+    '- [Verified action, scope, and measurable outcome.]',
     '',
     '## Education',
     '',
-    'BA Digital Media Production',
+    '[Verified education or credential]',
     '',
     '## JD Tailoring Notes',
     '',
@@ -5068,15 +5203,15 @@ function sampleCoverDraft(company, role) {
   return [
     `Dear ${company} team,`,
     '',
-    `The ${role} role sits in the operator-builder lane I am targeting: Founder\'s Office, Strategic Operations, and AI-augmented revenue systems work where the operating layer creates executive leverage.`,
+    `I am interested in the ${role} role. This fallback draft must be completed with profile-backed evidence before use.`,
     '',
-    'What I bring on day one. I have built partnership architecture that survived leadership transitions, sold complex enterprise motions across multiple buyer types, and shipped AI-assisted operating systems that protect executive attention without removing human judgment.',
+    '[Add one verified example that directly supports the role mandate.]',
     '',
-    'The differentiator I bring. My work combines relationship-driven enterprise trust, structured operating cadence, and AI systems that compress noise, preserve relationship signal, and make the few decisions that matter easier to see.',
+    '[Add a second verified example that demonstrates scope, judgment, and measurable impact.]',
     '',
-    'Happy to talk live.',
+    `I would welcome the opportunity to discuss the role and ${company}'s priorities.`,
     '',
-    'Sample Candidate'
+    '[Candidate name]'
   ].join('\n');
 }
 
@@ -5119,10 +5254,9 @@ function streamProfileTailorPackage(payload, res) {
     `Generating application package for ${company} - ${role}.`,
     '',
     'Canonical assumptions:',
-    canonicalMaster ? `- master resume source: ${canonicalMaster.path}` : '- master resume source: not detected',
-    "- headline: Operator-Builder | Founder's Office & Strategic Operations | AI-Augmented Revenue Systems",
-    '- Salesforce framing: pulled in beyond normal role scope to collaborate',
-    '- Candidate-facing language is scanned for generic AI phrasing and profile guardrail conflicts.',
+    canonicalMaster ? `- master resume source: ${canonicalMaster.name || 'detected'}` : '- master resume source: not detected',
+    '- use only facts supported by the current profile and master resume',
+    '- candidate-facing language is scanned for unsupported claims and profile guardrail conflicts',
     '',
   ].join('\n'));
   child.stdout.on('data', chunk => { stdout += chunk.toString(); });

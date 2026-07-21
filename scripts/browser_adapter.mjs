@@ -52,7 +52,7 @@ const DEFAULT_SALARY_BUCKET = envValue('SUITOR_LINKEDIN_SALARY_BUCKET', 'SUITOR_
 const LINKEDIN_MAX_PASSES = Math.max(4, Math.min(Number(envValue('SUITOR_LINKEDIN_MAX_PASSES', 'SUITOR_LINKEDIN_MAX_PASSES', 12)) || 12, 24));
 const LINKEDIN_STAGNANT_PASS_LIMIT = Math.max(2, Math.min(Number(envValue('SUITOR_LINKEDIN_STAGNANT_PASSES', 'SUITOR_LINKEDIN_STAGNANT_PASSES', 3)) || 3, 6));
 const BLOCKED_SOURCE_COMPANY_RE = /\b(swooped|ladders|jobot|cybercoders|robert half|dice|motion recruitment|recruiting|staffing|talent)\b/i;
-const DEFAULT_COMP_FLOOR = Number(envValue('SUITOR_COMP_FLOOR', 'SUITOR_COMP_FLOOR', '145000')) || 145000;
+const DEFAULT_COMP_FLOOR = Number(envValue('SUITOR_COMP_FLOOR', 'SUITOR_COMP_FLOOR', '0')) || 0;
 
 if (!existsSync(RUNTIME_ROOT) && existsSync(LEGACY_RUNTIME_ROOT)) {
   try {
@@ -135,15 +135,12 @@ function readProfileJson() {
 function configuredCompFloors() {
   const profile = readProfileJson();
   const compensation = profile?.compensation || {};
-  const geography = profile?.geography || {};
+  const summaryAmount = parseMoneyAmount(String(compensation.summary || '').match(/\$\s*[\d,.]+\s*[kKmM]?/)?.[0] || '');
   return {
-    defaultFloor: Number(compensation.soft_floor_base_atlanta_remote_director_head_of)
-      || Number(compensation.manual_review_base_range?.[0])
+    defaultFloor: Number(compensation.baseFloor)
+      || Number(compensation.floor)
+      || summaryAmount
       || DEFAULT_COMP_FLOOR,
-    californiaFloor: Number(compensation.hard_floor_base_california_director_head_of)
-      || Number(geography.california_exception?.hard_floor_base)
-      || Number(geography.california_exception?.hard_floor)
-      || 185000,
   };
 }
 
@@ -177,11 +174,6 @@ export function compensationRangeFromText(text) {
   return null;
 }
 
-function isCaliforniaResult(result) {
-  const text = [result.location, result.snippet, result.jdText].filter(Boolean).join(' ');
-  return /\b(california|san francisco|sf bay|bay area|los angeles|santa monica|san diego|san jose|palo alto|mountain view|redwood city|menlo park|sunnyvale|foster city|sacramento|irvine|oakland)\b/i.test(text);
-}
-
 export function isKnownBelowCompFloor(result, floors = configuredCompFloors()) {
   const text = [
     result.compensation,
@@ -193,8 +185,8 @@ export function isKnownBelowCompFloor(result, floors = configuredCompFloors()) {
   ].filter(Boolean).join('\n');
   const range = compensationRangeFromText(text);
   if (!range?.max) return false;
-  const floor = isCaliforniaResult(result) ? floors.californiaFloor : floors.defaultFloor;
-  return range.max < floor;
+  const floor = Number(floors.defaultFloor || 0);
+  return floor > 0 && range.max < floor;
 }
 
 function status(update = {}) {
@@ -754,7 +746,6 @@ async function searchLinkedIn(query, limit = 10) {
       query: query || DEFAULT_QUERY,
       filters: linkedInFilterSummary(),
       compFloor: floors.defaultFloor,
-      californiaCompFloor: floors.californiaFloor,
       inspectedUniqueCount: seenKeys.size,
       inspectionTarget: inspectTarget,
       skippedBelowComp: skippedBelowComp.map(result => ({
