@@ -139,6 +139,17 @@ try {
   });
   assert.equal(unsafe.response.status, 400, 'manual capture should reject non-http URLs');
 
+  const submitted = await api(token, '/api/application-submitted', {
+    method: 'POST',
+    body: JSON.stringify({
+      company: 'Example Company',
+      role: 'Program Lead',
+      source: 'Referral',
+      notes: 'Synthetic source-label regression fixture.',
+    }),
+  });
+  assert.equal(submitted.response.status, 200, 'source-label fixture should save');
+
   browser = await chromium.launch({ headless: true });
   for (const viewport of [
     { name: 'desktop', width: 1440, height: 900 },
@@ -159,6 +170,13 @@ try {
     assert.equal(loginStatus, 200, `${viewport.name} login should succeed`);
     await page.reload();
     await page.waitForSelector('#applicationsView.active');
+
+    if (viewport.name === 'desktop') {
+      await page.click('[data-view="learning"]');
+      await page.waitForSelector('#learningView.active');
+      assert.match(await page.locator('#learningSources').innerText(), /Referral/, 'Learning Insights should preserve source names');
+      assert.doesNotMatch(await page.locator('#learningSources').innerText(), /Unknown/, 'named learning sources should not render as Unknown');
+    }
 
     for (const view of ['applications', 'scans', 'capture', 'resume', 'learning', 'assessments', 'reference', 'settings']) {
       await page.click(`[data-view="${view}"]`);

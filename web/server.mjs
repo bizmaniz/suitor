@@ -10,6 +10,7 @@ import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
+import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -1820,6 +1821,7 @@ function dbApplicationToCard(row = {}) {
       'Date submitted': dateText,
       'Comp posted': row.compensation || known.comp || '',
       Location: row.location || known.location || '',
+      Source: row.source || '',
       'Next action': row.next_action || row.notes || '',
       Notes: row.notes || '',
     },
@@ -2958,7 +2960,9 @@ function scanDecisionSource(item = {}) {
 
 function trackerCardSource(card = {}) {
   const fields = card.fields || {};
-  return sourceLabelFromText(fields.Source)
+  const explicitSource = dbText(fields.Source);
+  return sourceLabelFromText(explicitSource)
+    || explicitSource
     || sourceLabelFromText(fields.Notes)
     || sourceLabelFromText(fields['Next action'])
     || sourceLabelFromText(card.title)
@@ -3942,13 +3946,14 @@ function localJobEvaluation(message = '') {
   if (compFloor) caveats.push(`Configured compensation floor: $${Math.round(compFloor / 1000)}K.`);
   if (riskNotes.length) caveats.push(`Risk flags: ${[...new Set(riskNotes)].join(', ')}.`);
 
+  const actionDecision = localEvaluationDecision({ hardMatches, manualMatches, total, floor });
   const actionLine = !parsedJobIdentityIsUsable(parsed)
     ? '\n\nScan card not saved because the company and role title could not be parsed cleanly from the pasted text. Add a `Company:` and `Role:` line if you want this persisted.'
-    : hardMatches.length || total < floor
-      ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'passed', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: `Local JD evaluation scored below the ${floor} shortlist floor.` })}`
-      : manualMatches.length
-        ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'manual_review', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: 'Local JD evaluation matched a configured manual-review criterion.' })}`
-      : `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'shortlisted', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: `Local JD evaluation cleared the ${floor} shortlist floor.` })}`;
+    : actionDecision === 'manual_review'
+      ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'manual_review', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: 'Local JD evaluation matched a configured manual-review criterion.' })}`
+      : actionDecision === 'passed'
+        ? `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'passed', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: hardMatches.length ? 'Local JD evaluation matched a configured hard filter.' : `Local JD evaluation scored below the ${floor} shortlist floor.` })}`
+        : `\n\n[app-action] ${JSON.stringify({ type: 'scan-decision', decision: 'shortlisted', company: parsed.company, role: parsed.role, title: `${parsed.role} - ${parsed.company}`, score: total, comp: displayCompFromTextV2(text), location: displayLocationFromText(text), reason: `Local JD evaluation cleared the ${floor} shortlist floor.` })}`;
 
   return [
     `Score: ${total}/100`,

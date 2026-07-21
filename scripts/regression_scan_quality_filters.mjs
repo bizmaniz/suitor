@@ -6,7 +6,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
-import { isQuickReject, isSearchResultNoise, readProfileHardRejectPhrases } from './scan_quality_filters.mjs';
+import { isQuickReject, isSearchResultNoise, localEvaluationDecision, readProfileHardRejectPhrases } from './scan_quality_filters.mjs';
 
 assert.equal(isQuickReject({
   company: 'Example Staffing',
@@ -31,6 +31,20 @@ assert.equal(isQuickReject({
   title: 'Program Lead',
   location: 'United States - Remote',
 }, ['unrelated phrase']), false, 'non-matching configured exclusions should not reject a role');
+
+assert.equal(localEvaluationDecision({
+  manualMatches: ['heavy travel'],
+  total: 52,
+  floor: 75,
+}), 'manual_review', 'manual-review criteria should win over a below-floor score');
+assert.equal(localEvaluationDecision({
+  hardMatches: ['commission only'],
+  manualMatches: ['heavy travel'],
+  total: 92,
+  floor: 75,
+}), 'passed', 'hard filters should win over manual-review criteria and score');
+assert.equal(localEvaluationDecision({ total: 52, floor: 75 }), 'passed');
+assert.equal(localEvaluationDecision({ total: 82, floor: 75 }), 'shortlisted');
 
 assert.equal(isSearchResultNoise({
   title: '5,000+ Director Alliances jobs in United States',

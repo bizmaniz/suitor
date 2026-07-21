@@ -322,7 +322,7 @@ function renderLearningInsights(payload = state.learningSummary) {
   const outcomes = Object.entries(statusCounts)
     .map(([label, value]) => ({ label: label.replaceAll('_', ' '), value }))
     .sort((a, b) => Number(b.value) - Number(a.value));
-  const sources = (tracker.sourceCounts || []).map(item => ({ label: item.key || item.source, value: item.count || item.total }));
+  const sources = (tracker.sourceCounts || []).map(item => ({ label: item.name || item.key || item.source, value: item.count || item.total }));
   const recent = (decisions.recentDecisions || []).slice(0, 12).map(item => ({
     label: item.title || item.decision,
     value: item.decision || '',

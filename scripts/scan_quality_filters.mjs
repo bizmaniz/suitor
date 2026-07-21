@@ -17,6 +17,12 @@ export function isQuickReject(job = {}, configuredPhrases = []) {
     .some(value => haystack.includes(value));
 }
 
+export function localEvaluationDecision({ hardMatches = [], manualMatches = [], total = 0, floor = 75 } = {}) {
+  if (hardMatches.length) return 'passed';
+  if (manualMatches.length) return 'manual_review';
+  return Number(total) < Number(floor) ? 'passed' : 'shortlisted';
+}
+
 export function readProfileHardRejectPhrases(profileRoot = '', candidateFirst = 'Candidate') {
   if (!profileRoot) return [];
   const candidates = [
