@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Suitor</title>
-  <link rel="stylesheet" href="/styles.css?v=20260520-browser-acp">
+  <link rel="stylesheet" href="/styles.css?v=20260721-product-workspaces">
 </head>
 <body>
   <div class="app-shell">
@@ -18,10 +18,23 @@
       </div>
 
       <nav class="nav-list" aria-label="Primary">
-        <button class="nav-item active" data-view="applications">Applications</button>
-        <button class="nav-item" data-view="scans">Scans</button>
-        <button class="nav-item" data-view="resume">Resume Library</button>
-        <button class="nav-item" data-view="settings">Settings</button>
+        <div class="nav-group">
+          <span class="nav-group-label">Work</span>
+          <button class="nav-item active" data-view="applications">Applications</button>
+          <button class="nav-item" data-view="scans">Scans</button>
+          <button class="nav-item" data-view="capture">Capture</button>
+          <button class="nav-item" data-view="resume">Resume Studio</button>
+        </div>
+        <div class="nav-group">
+          <span class="nav-group-label">Knowledge</span>
+          <button class="nav-item" data-view="learning">Learning Insights</button>
+          <button class="nav-item" data-view="assessments">Assessments</button>
+          <button class="nav-item" data-view="reference">Reference Library</button>
+        </div>
+        <div class="nav-group nav-group-system">
+          <span class="nav-group-label">System</span>
+          <button class="nav-item" data-view="settings">Settings</button>
+        </div>
       </nav>
 
       <div class="guardrail-card">
@@ -29,7 +42,7 @@
         <strong id="lockedTarget">Locked Target</strong>
         <dl class="target-facts">
           <div><dt>Comp</dt><dd><span id="compSummary">Comp floor</span> <small id="compDetail">Target comp</small></dd></div>
-          <div><dt>Location</dt><dd id="locationSummary">Atlanta metro or remote</dd></div>
+          <div><dt>Location</dt><dd id="locationSummary">Location preferences not set</dd></div>
           <div><dt>This week</dt><dd id="navWeeklyProgress">0 active roles</dd></div>
         </dl>
       </div>
@@ -78,6 +91,61 @@
         </details>
       </section>
 
+      <section id="captureView" class="view">
+        <section class="workspace-intro">
+          <div>
+            <p class="eyebrow">Capture</p>
+            <h3>Bring outside activity into Suitor</h3>
+            <p>Paste application updates or save roles found outside the scanner. Everything stays in this profile.</p>
+          </div>
+        </section>
+        <div class="capture-workspace-grid">
+          <section class="setting-card capture-workspace-card">
+            <div>
+              <p class="eyebrow">Application Update</p>
+              <h3>Email Import</h3>
+              <p class="helper-text">Paste a rejection or interview email. Optional company and role hints improve matching.</p>
+            </div>
+            <div class="import-fields">
+              <input id="emailImportCompany" placeholder="Company, optional">
+              <input id="emailImportRole" placeholder="Role, optional">
+            </div>
+            <textarea id="emailImportText" rows="9" placeholder="Paste the application email here."></textarea>
+            <div class="connection-actions">
+              <button id="importEmailBtn" class="button-primary compact" type="button">Import Email</button>
+              <button id="clearEmailImportsBtn" class="button-secondary compact" type="button">Clear Import History</button>
+            </div>
+            <p id="emailImportResult" class="helper-text"></p>
+          </section>
+          <section class="setting-card capture-workspace-card">
+            <div>
+              <p class="eyebrow">Outside Role</p>
+              <h3>Manual Job Capture</h3>
+              <p class="helper-text">Save a referral, recruiter lead, or direct role URL with the visible JD text when available.</p>
+            </div>
+            <div class="import-fields">
+              <input id="captureCompany" placeholder="Company">
+              <input id="captureRole" placeholder="Role">
+            </div>
+            <input id="captureUrl" type="url" placeholder="https://company.example/jobs/role">
+            <input id="captureSource" placeholder="Source, for example referral or recruiter">
+            <textarea id="captureText" rows="9" placeholder="Paste visible JD text or notes here."></textarea>
+            <button id="captureJobBtn" class="button-primary compact" type="button">Save Capture</button>
+            <p id="captureResult" class="helper-text"></p>
+          </section>
+        </div>
+        <section class="capture-history" aria-label="Recent captures">
+          <div class="workspace-section-header">
+            <div>
+              <p class="eyebrow">Profile Memory</p>
+              <h3>Recent Captures</h3>
+            </div>
+            <button id="refreshCapturesBtn" class="button-secondary compact" type="button">Refresh</button>
+          </div>
+          <div id="captureList" class="capture-list"></div>
+        </section>
+      </section>
+
       <section id="scansView" class="view">
         <div class="toolbar">
           <button id="scanBtn" class="button-secondary">Quick Scan</button>
@@ -122,6 +190,32 @@
           <summary>Technical log</summary>
           <pre id="scanOutput" class="terminal"></pre>
         </details>
+      </section>
+
+      <section id="learningView" class="view">
+        <section class="workspace-intro">
+          <div>
+            <p class="eyebrow">Learning Insights</p>
+            <h3>Signals from scan and application history</h3>
+            <p>Use these directional patterns to improve source selection and shortlist discipline. They never override profile guardrails.</p>
+          </div>
+          <button id="refreshLearningBtn" class="button-secondary compact" type="button">Refresh Insights</button>
+        </section>
+        <div id="learningStats" class="learning-stats"></div>
+        <div class="learning-grid">
+          <section class="learning-panel">
+            <h3>Application Outcomes</h3>
+            <div id="learningOutcomes" class="learning-list"></div>
+          </section>
+          <section class="learning-panel">
+            <h3>Source Activity</h3>
+            <div id="learningSources" class="learning-list"></div>
+          </section>
+          <section class="learning-panel learning-panel-wide">
+            <h3>Durable Decisions</h3>
+            <div id="learningDecisions" class="learning-list"></div>
+          </section>
+        </div>
       </section>
 
       <section id="resumeView" class="view">
@@ -170,6 +264,50 @@
         <div id="filesList" class="file-grid"></div>
       </section>
 
+      <section id="assessmentsView" class="view">
+        <section class="workspace-intro">
+          <div>
+            <p class="eyebrow">Assessments</p>
+            <h3>Workplace assessment library</h3>
+            <p>Upload PDF or Word assessments. Suitor uses extracted summaries as soft fit context, never as hard screening rules.</p>
+          </div>
+        </section>
+        <section class="setting-card assessment-workspace">
+          <div class="assessment-workspace-header">
+            <div>
+              <h3>Assessment Files</h3>
+              <p id="assessmentRoot">Files are stored inside this profile.</p>
+            </div>
+            <label class="attach assessment-upload">
+              Upload Assessment
+              <input id="assessmentInput" type="file" accept=".pdf,.doc,.docx">
+            </label>
+          </div>
+          <div id="assessmentList" class="assessment-list"></div>
+        </section>
+      </section>
+
+      <section id="referenceView" class="view">
+        <section class="workspace-intro">
+          <div>
+            <p class="eyebrow">Reference Library</p>
+            <h3>Canonical profile and operating rules</h3>
+            <p>Review the profile, project instructions, and URL verification protocol used by Suitor.</p>
+          </div>
+        </section>
+        <section class="setting-card reference-card">
+          <div class="doc-actions">
+            <button class="doc-button" data-doc="profile">Candidate Search Profile</button>
+            <button class="doc-button" data-doc="instructions">Project Instructions</button>
+            <button class="doc-button" data-doc="verification">URL Verification Protocol</button>
+          </div>
+          <div class="doc-toolbar">
+            <button id="copyDocBtn" class="button-secondary compact" type="button">Copy Selected Reference</button>
+          </div>
+          <pre id="docViewer" class="doc-viewer">Select a reference document to read it here.</pre>
+        </section>
+      </section>
+
       <section id="settingsView" class="view">
         <div class="settings-grid">
           <section class="setting-card connections-card">
@@ -181,14 +319,6 @@
               <button id="editConnectionsBtn" class="button-secondary compact" type="button">Edit</button>
             </div>
             <div id="connectionsList" class="connections-list"></div>
-            <details class="email-import-panel">
-              <summary>Email import</summary>
-              <textarea id="emailImportText" rows="6" placeholder="Paste an exported rejection or interview email. Suitor reads this text locally and updates the tracker when it detects a rejection or scheduled screen."></textarea>
-              <div class="doc-toolbar">
-                <button id="importEmailBtn" class="button-primary compact" type="button">Import Email</button>
-                <button id="clearEmailImportsBtn" class="button-secondary compact" type="button">Clear Email Imports</button>
-              </div>
-            </details>
             <div class="doc-toolbar">
               <button id="clearCustomSourcesBtn" class="button-secondary compact" type="button">Clear Custom Sources</button>
               <button id="disconnectLinkedInBtn" class="button-secondary compact" type="button">Disconnect LinkedIn</button>
@@ -197,32 +327,6 @@
               <a id="exportCsvLink" class="button-secondary compact" href="/api/export.csv" target="_blank" rel="noreferrer">Export CSV</a>
               <a id="exportCalendarLink" class="button-secondary compact" href="/api/calendar/interviews.ics" target="_blank" rel="noreferrer">Export ICS</a>
             </div>
-          </section>
-          <section class="setting-card reference-card">
-            <h3>Reference Docs</h3>
-            <div class="doc-actions">
-              <button class="doc-button" data-doc="profile">Candidate Search Profile</button>
-              <button class="doc-button" data-doc="instructions">Project Instructions</button>
-              <button class="doc-button" data-doc="verification">URL Verification Protocol</button>
-            </div>
-            <div class="doc-toolbar">
-              <button id="copyDocBtn" class="button-secondary compact" type="button">Copy Instructions</button>
-              <button class="button-secondary compact" type="button" disabled title="Coming soon">Export Reference</button>
-              <button class="button-secondary compact" type="button" disabled title="Read-only reference">Edit Reference</button>
-              <button class="button-primary compact" type="button" disabled title="Read-only reference">Save Reference</button>
-            </div>
-            <div class="assessment-panel">
-              <div>
-                <h4>Workplace Assessments</h4>
-                <p id="assessmentRoot">Upload Working Genius, Enneagram, RightPath, DISC, Kolbe, StrengthsFinder, or similar PDF/Word files. The assistant uses these as soft job-fit context.</p>
-              </div>
-              <label class="attach assessment-upload">
-                Upload Assessment
-                <input id="assessmentInput" type="file" accept=".pdf,.doc,.docx">
-              </label>
-              <div id="assessmentList" class="assessment-list"></div>
-            </div>
-            <pre id="docViewer" class="doc-viewer"></pre>
           </section>
         </div>
       </section>
@@ -266,6 +370,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260607-chat-comp-metadata" type="module"></script>
+  <script src="/app.js?v=20260721-product-workspaces" type="module"></script>
 </body>
 </html>

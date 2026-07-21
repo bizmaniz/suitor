@@ -31,7 +31,7 @@ import path from 'path';
 import yaml from 'js-yaml';
 
 import { makeHttpCtx } from './providers/_http.mjs';
-import { isQuickReject, isSearchResultNoise } from './scripts/scan_quality_filters.mjs';
+import { isQuickReject, isSearchResultNoise, readProfileHardRejectPhrases } from './scripts/scan_quality_filters.mjs';
 
 const parseYaml = yaml.load;
 
@@ -434,6 +434,7 @@ async function main() {
   const locationFilter = buildLocationFilter(config.location_filter);
   const excludedCompanies = excludedCompanyNames(config);
   const keywordExclusions = excludedKeywords(config);
+  const profileRejectPhrases = readProfileHardRejectPhrases(PROFILE_ROOT, CANDIDATE_FIRST);
 
   // 3. Resolve a provider for each enabled company
   const targets = [];
@@ -506,7 +507,7 @@ async function main() {
           bySource[provider.id].filtered++;
           continue;
         }
-        if (isSearchResultNoise(job) || isQuickReject(job)) {
+        if (isSearchResultNoise(job) || isQuickReject(job, profileRejectPhrases)) {
           totalFilteredTitle++;
           bySource[provider.id].filtered++;
           continue;

@@ -36,7 +36,7 @@ const secretLike = [
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    if (entry.isDirectory() && SKIP_DIRS.has(entry.name)) continue;
+    if (entry.isDirectory() && (SKIP_DIRS.has(entry.name) || entry.name.startsWith('.suitor-'))) continue;
     const full = join(dir, entry.name);
     const rel = relative(ROOT, full).replace(/\\/g, '/');
     if (entry.isDirectory()) walk(full, out);

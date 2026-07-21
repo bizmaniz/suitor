@@ -91,28 +91,28 @@ assert.deepEqual(
 );
 assert.equal(isKnownBelowCompFloor({
   title: 'Strategic Operations Manager',
-  company: 'Commure',
+  company: 'Example Health',
   location: 'United States',
   jdText: 'Compensation Range: $90K - $120K',
-}, { defaultFloor: 145000, californiaFloor: 185000 }), true);
+}, { defaultFloor: 145000 }), true);
 assert.equal(isKnownBelowCompFloor({
-  title: 'Chief of Staff',
-  company: 'Formic',
-  location: 'California',
+  title: 'Program Lead',
+  company: 'Example Labs',
+  location: 'West Coast',
   jdText: 'Base salary range: $150K - $180K',
-}, { defaultFloor: 145000, californiaFloor: 185000 }), true);
+}, { defaultFloor: 145000 }), false);
 assert.equal(isKnownBelowCompFloor({
-  title: 'Chief of Staff',
-  company: 'Formic',
+  title: 'Program Lead',
+  company: 'Example Labs',
   location: 'Remote - United States',
   jdText: 'Base salary range: $185K - $220K',
-}, { defaultFloor: 145000, californiaFloor: 185000 }), false);
+}, { defaultFloor: 145000 }), false);
 assert.equal(isKnownBelowCompFloor({
-  title: 'Chief of Staff',
-  company: 'Formic',
+  title: 'Program Lead',
+  company: 'Example Labs',
   location: 'Remote - United States',
   jdText: 'Compensation not listed.',
-}, { defaultFloor: 145000, californiaFloor: 185000 }), false);
+}, { defaultFloor: 145000 }), false);
 
 const rawLaunchLog = `\u001b[2mbrowserType.launchPersistentContext: Opening in existing browser session.
 Call log:

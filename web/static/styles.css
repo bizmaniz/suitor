@@ -1122,8 +1122,22 @@ input:focus, textarea:focus {
 }
 
 @media (max-width: 700px) {
-  .app-shell { grid-template-columns: 1fr; }
-  .nav { border-right: 0; border-bottom: 1px solid var(--line); }
+  .app-shell {
+    height: auto;
+    min-height: 100vh;
+    overflow: visible;
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto auto;
+  }
+  .nav {
+    position: relative;
+    z-index: 3;
+    min-height: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .main-pane { min-height: 100vh; }
+  .chat-pane { height: min(680px, 80vh); }
   .resume-grid, .settings-grid { grid-template-columns: 1fr; }
   .master-resume-panel { grid-template-columns: 1fr; }
   .master-resume-actions { justify-content: stretch; }
@@ -2200,5 +2214,236 @@ input:focus-visible {
   .onboarding-nudge {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+.nav-list {
+  align-content: start;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.nav-group {
+  display: grid;
+  gap: 6px;
+}
+
+.nav-group-label {
+  padding: 0 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0;
+}
+
+.nav-group-system {
+  padding-top: 4px;
+  border-top: 1px solid var(--line);
+}
+
+.nav-group .nav-item {
+  min-height: 38px;
+  padding: 9px 11px 9px 32px;
+}
+
+.nav-group .nav-item::before {
+  left: 13px;
+  width: 7px;
+  height: 7px;
+}
+
+.workspace-intro,
+.workspace-section-header,
+.assessment-workspace-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.workspace-intro {
+  margin-bottom: 18px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.workspace-intro > div,
+.workspace-section-header > div {
+  display: grid;
+  gap: 5px;
+}
+
+.capture-workspace-grid,
+.learning-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.capture-workspace-card,
+.assessment-workspace,
+.capture-history,
+.learning-panel {
+  padding: 16px;
+}
+
+.capture-workspace-card {
+  display: grid;
+  align-content: start;
+  gap: 11px;
+}
+
+.capture-workspace-card input,
+.capture-workspace-card textarea,
+.import-fields input {
+  width: 100%;
+}
+
+.capture-workspace-card textarea {
+  resize: vertical;
+}
+
+.import-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 9px;
+}
+
+.capture-history,
+.learning-panel {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.capture-list,
+.learning-list {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.capture-item,
+.learning-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: start;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+}
+
+.capture-item:first-child,
+.learning-row:first-child {
+  border-top: 0;
+}
+
+.capture-item > div,
+.learning-row > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.capture-item span,
+.capture-item small,
+.learning-row span,
+.learning-row small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.capture-item-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.learning-stats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.learning-stat {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.learning-stat span,
+.learning-stat small {
+  display: block;
+  color: var(--muted);
+}
+
+.learning-stat strong {
+  display: block;
+  margin: 4px 0;
+  font-size: 22px;
+}
+
+.learning-panel {
+  margin-top: 0;
+}
+
+.learning-panel-wide {
+  grid-column: 1 / -1;
+}
+
+.assessment-workspace {
+  display: grid;
+  gap: 14px;
+}
+
+@media (max-width: 980px) {
+  .capture-workspace-grid,
+  .learning-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .learning-panel-wide {
+    grid-column: auto;
+  }
+
+  .learning-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .nav-list {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .nav-group-system {
+    border-top: 0;
+    padding-top: 0;
+  }
+
+  .workspace-intro,
+  .workspace-section-header,
+  .assessment-workspace-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .import-fields,
+  .learning-stats {
+    grid-template-columns: 1fr;
+  }
+
+  .capture-item,
+  .learning-row {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 480px) {
+  .nav-list {
+    grid-template-columns: 1fr;
   }
 }

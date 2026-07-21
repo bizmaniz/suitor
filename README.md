@@ -55,6 +55,16 @@ Tier 1 unlocks scanning once basics, target-role direction, logistics, and compe
 
 The intake writes `Candidate Search Profile.md`, `Candidate Search Profile.json`, `Job Scan Prompt.md`, and `Intake Status.md` under your profile folder. The JSON includes scoring weights, hard filters, automatic rejection criteria, manual-review criteria, and exclude keywords used by scans.
 
+## Workspaces
+
+Suitor keeps daily work, profile knowledge, and system controls separate:
+
+- **Work:** Applications, Scans, Capture, and Resume Studio.
+- **Knowledge:** Learning Insights, Assessments, and Reference Library.
+- **System:** Settings for connections, source configuration, security, backup, and exports.
+
+Capture accepts pasted application emails and manually discovered roles without connecting to an inbox. Manual captures are deduplicated in the profile-local SQLite database and can be removed with a soft-delete action. Learning Insights summarizes source activity and durable outcomes without turning historical patterns into automatic rules.
+
 ## Security And Your Data
 
 - Local-only: profile, resume, scans, generated drafts, browser state, and SQLite database stay on your machine.
@@ -72,6 +82,8 @@ Read [docs/SCANNING_SAFELY.md](docs/SCANNING_SAFELY.md) before using browser-bas
 - [docs/SOURCES.md](docs/SOURCES.md)
 - [docs/SCANNING_SAFELY.md](docs/SCANNING_SAFELY.md)
 - [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md)
+- [docs/WORKSPACES.md](docs/WORKSPACES.md)
+- [docs/MIGRATIONS.md](docs/MIGRATIONS.md)
 
 ## Useful Commands
 

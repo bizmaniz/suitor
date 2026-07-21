@@ -6,31 +6,31 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
-import { isQuickReject, isSearchResultNoise } from './scan_quality_filters.mjs';
+import { isQuickReject, isSearchResultNoise, readProfileHardRejectPhrases } from './scan_quality_filters.mjs';
 
 assert.equal(isQuickReject({
-  company: 'Ladders',
-  title: 'Chief of Staff',
+  company: 'Example Staffing',
+  title: 'Program Lead',
   location: 'United States',
-}), true, 'Ladders should not enter the active scan board');
+}, ['staffing']), true, 'configured company exclusions should filter matching jobs');
 
 assert.equal(isQuickReject({
-  company: 'Robert Half',
-  title: 'Director of Strategic Operations',
-  location: 'Remote - US',
-}), true, 'staffing/recruiting intermediaries should be filtered');
-
-assert.equal(isQuickReject({
-  company: 'Acme AI',
+  company: 'Example Company',
   title: 'Product Marketing Manager',
   location: 'Remote - US',
-}), true, 'product marketing should be filtered from operator scans');
+}, ['product marketing']), true, 'configured title exclusions should filter matching jobs');
 
 assert.equal(isQuickReject({
-  company: 'Formic',
-  title: 'Chief of Staff to the CEO',
+  company: 'Example Company',
+  title: 'Program Lead',
+  location: 'Remote - US',
+}, []), false, 'no profile exclusions should mean no profile-specific quick rejects');
+
+assert.equal(isQuickReject({
+  company: 'Example Company',
+  title: 'Program Lead',
   location: 'United States - Remote',
-}), false, 'real founder-adjacent operator roles should survive quick reject');
+}, ['unrelated phrase']), false, 'non-matching configured exclusions should not reject a role');
 
 assert.equal(isSearchResultNoise({
   title: '5,000+ Director Alliances jobs in United States',
@@ -60,6 +60,19 @@ assert.equal(htmlToPlainText('<script>if (a < b) { alert(a); }</script><div>Afte
 
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-scan-quality-'));
 try {
+  writeFileSync(join(profileRoot, 'Candidate Search Profile.json'), JSON.stringify({
+    scoring: {
+      hardFilters: {
+        excludeKeywords: ['commission only'],
+        automaticRejections: ['weekly travel'],
+      },
+    },
+  }), 'utf8');
+  assert.deepEqual(
+    readProfileHardRejectPhrases(profileRoot, 'Sample'),
+    ['commission only', 'weekly travel'],
+    'quick scan should load profile-local hard filters',
+  );
   const portalsPath = join(profileRoot, 'portals.yml');
   writeFileSync(portalsPath, [
     'providers:',

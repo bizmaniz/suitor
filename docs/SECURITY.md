@@ -2,6 +2,8 @@
 
 Suitor is designed as a single-user local app. It binds to `127.0.0.1` by default and stores profile data, resumes, generated drafts, browser state, and the local SQLite database on your machine.
 
+Manual role captures and pasted email classifications are profile-local. Capture does not fetch a pasted URL or connect to an inbox; URL verification happens only through the guarded scan paths. Removing a manual capture soft-deletes its database row so the local audit history remains recoverable.
+
 ## LAN Mode
 
 Non-loopback binding is refused unless you explicitly set `SUITOR_ALLOW_LAN=1` with a non-loopback `SUITOR_HOST`, for example:

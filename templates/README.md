@@ -1,6 +1,6 @@
 # Templates
 
-System-layer template files used by career-ops scripts and modes. These files are auto-updated when you run `npm run update` -- put user customizations in the user-layer files instead (see DATA_CONTRACT.md).
+Reusable templates for Suitor's document and scanner pipelines. Keep profile-specific configuration in the profile folder rather than editing shared defaults.
 
 ## Files
 
@@ -17,7 +17,7 @@ The HTML template rendered by Playwright into PDF. Uses placeholder tokens (`{{N
 
 **Design:** Space Grotesk headings + DM Sans body, single-column ATS-safe layout, self-hosted fonts from `fonts/`.
 
-**Customization:** Edit this file to change colors, spacing, or section order. The placeholder tokens are documented in `batch/batch-prompt.md` under "Template placeholders."
+**Customization:** Edit this file to change colors, spacing, or section order. Keep the documented placeholder tokens intact.
 
 ### cv-template.tex
 
@@ -36,13 +36,13 @@ node generate-latex.mjs output/cv-name-company-date.tex output/custom-name.pdf
 
 **Prerequisites:** `pdflatex` via [MiKTeX](https://miktex.org/) (Windows) or TeX Live (Linux/macOS). First compilation may auto-install missing LaTeX packages. Alternatively, upload the `.tex` file directly to [Overleaf](https://www.overleaf.com) — no local install needed.
 
-**Customization:** Edit this file to change margins, section order, or formatting commands. The placeholder tokens are documented in `modes/latex.md` under "Template Placeholders."
+**Customization:** Edit this file to change margins, section order, or formatting commands. Keep the documented placeholder tokens intact.
 
 ### portals.example.yml
 
-Pre-configured portal scanner with 45+ tracked companies and search queries. Contains title filters, company career page URLs, Greenhouse API endpoints, and WebSearch queries.
+Neutral example scanner configuration with disabled placeholder sources.
 
-**To activate:** Copy to project root as `portals.yml` and customize `title_filter.positive` keywords for your target roles. Add or remove companies as needed.
+**To activate:** Copy it to a profile as `portals.yml`, then replace every example with your own role, geography, and source settings. The onboarding wizard normally generates this file for you.
 
 ### states.yml
 
