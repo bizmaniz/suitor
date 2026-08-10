@@ -3,8 +3,11 @@
 ## Prerequisites
 
 - Node.js 22.5 or newer
+- Python 3
 - Git
 - OpenAI Codex CLI or Anthropic Claude Code CLI
+
+Suitor uses Python for PDF and DOCX text extraction and for application package generation. PDF extraction requires `pypdf`; DOCX extraction requires `python-docx`, which provides the `docx` module.
 
 ## Windows
 
@@ -12,6 +15,8 @@ PowerShell:
 
 ```powershell
 winget install OpenJS.NodeJS.LTS
+python --version
+python -m pip install pypdf python-docx
 git clone https://github.com/Bizmaniz/suitor.git
 cd suitor
 npm install
@@ -32,6 +37,8 @@ Use your package manager or `nvm` to install Node 22 or newer. With `nvm`:
 ```bash
 nvm install 22
 nvm use 22
+python3 --version
+python3 -m pip install pypdf python-docx
 git clone https://github.com/Bizmaniz/suitor.git
 cd suitor
 npm install
