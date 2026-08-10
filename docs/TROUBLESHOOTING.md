@@ -104,11 +104,15 @@ Use that value in the unlock dialog.
 
 ## Playwright Browser Missing
 
-Install Chromium:
+Core Suitor can run without Chromium. Chromium is required for LinkedIn browser sessions and searches, browser recovery on JavaScript-rendered pages, and the full regression test suite.
+
+`npm install` installs the Playwright package but not the separate Chromium browser. Install Chromium with:
 
 ```bash
 npx playwright install chromium
 ```
+
+If this error appears after a Playwright upgrade, run the command again so the installed Chromium revision matches Playwright.
 
 ## Empty Scan Results
 

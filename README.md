@@ -58,6 +58,14 @@ Open [http://127.0.0.1:8787](http://127.0.0.1:8787), unlock with the token in `<
 
 If `npm` is not found, install Node.js first, open a new terminal, and run the version checks above. See the [installation guide](docs/INSTALL.md) for Windows, macOS, Linux, Playwright, and alternate-port instructions.
 
+Core Suitor runs without a Playwright browser. Chromium is required for LinkedIn browser sessions and searches, browser recovery on JavaScript-rendered pages, and the full regression test suite. `npm install` installs the Playwright package but not the separate Chromium browser. Install it with:
+
+```bash
+npx playwright install chromium
+```
+
+Run that command again if Chromium is missing after a Playwright upgrade.
+
 ## Latest Release
 
 **[Suitor v1.1.0](https://github.com/bizmaniz/suitor/releases/tag/v1.1.0)** adds the Work, Knowledge, and System workspaces; profile-local manual job capture; Learning Insights; generic profile-driven fallback scoring; responsive regression coverage; and SQLite schema version 3.

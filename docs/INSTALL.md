@@ -74,17 +74,23 @@ SUITOR_PORT=8788 npm start
 
 On headless Linux, do not enable LinkedIn browser scanning unless a desktop session or suitable browser display is available. API/feed providers and RSS scans work without a GUI.
 
-Install dependencies:
+Install Node dependencies:
 
 ```bash
 npm install
 ```
 
-Install Playwright's browser when you want LinkedIn browser support:
+## Chromium For Browser Features And Tests
+
+Core Suitor runs without Chromium. Chromium is required for LinkedIn browser sessions and searches, browser recovery on JavaScript-rendered pages, and the full regression test suite.
+
+`npm install` provides the Playwright package but does not install the separate Chromium browser. Install Chromium with:
 
 ```bash
 npx playwright install chromium
 ```
+
+Playwright upgrades can require a matching browser revision. Run the Chromium install command again after upgrading Playwright if the browser is reported missing.
 
 ## Setup
 
