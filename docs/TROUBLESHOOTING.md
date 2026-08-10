@@ -26,7 +26,14 @@ macOS or Linux:
 python3 --version
 ```
 
-If the command is not found, install Python 3 and make sure it is on `PATH`. On Windows, enable the installer option that adds `python.exe` to `PATH`. Then open a new terminal and restart Suitor.
+If the command is not found, install Python 3 and make sure it is on `PATH`. On Windows, enable the installer option that adds `python.exe` to `PATH`. On Ubuntu or Debian, install the required packages:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-venv
+```
+
+Then open a new terminal and restart Suitor.
 
 ## Missing pypdf Or docx Module
 
@@ -41,10 +48,13 @@ python -m pip install pypdf python-docx
 macOS or Linux:
 
 ```bash
+mkdir -p "$HOME/.venvs"
+python3 -m venv "$HOME/.venvs/suitor"
+source "$HOME/.venvs/suitor/bin/activate"
 python3 -m pip install pypdf python-docx
 ```
 
-Run the command with the same interpreter shown by the version check, then retry the PDF or DOCX upload.
+Run the command with the same interpreter shown by the version check. Keep the virtual environment active when starting Suitor, then retry the PDF or DOCX upload.
 
 ## CLI Not Found
 

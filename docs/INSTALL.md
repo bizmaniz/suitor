@@ -34,15 +34,35 @@ $env:SUITOR_PORT="8788"; npm start
 
 Use your package manager or `nvm` to install Node 22 or newer. With `nvm`:
 
+On Ubuntu or Debian, install Python, pip, and virtual-environment support first:
+
+```bash
+sudo apt update
+sudo apt install python3 python3-pip python3-venv
+```
+
+Create a dedicated Python environment outside the repository, activate it, and then install Suitor:
+
 ```bash
 nvm install 22
 nvm use 22
 python3 --version
+mkdir -p "$HOME/.venvs"
+python3 -m venv "$HOME/.venvs/suitor"
+source "$HOME/.venvs/suitor/bin/activate"
 python3 -m pip install pypdf python-docx
 git clone https://github.com/Bizmaniz/suitor.git
 cd suitor
 npm install
 npm run setup
+npm start
+```
+
+In each new terminal, activate the environment before starting Suitor:
+
+```bash
+source "$HOME/.venvs/suitor/bin/activate"
+cd suitor
 npm start
 ```
 
