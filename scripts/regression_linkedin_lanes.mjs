@@ -64,8 +64,25 @@ assert.equal(result.inspectedUniqueCount, 12, 'inspected counts are aggregated a
 assert.equal(result.skippedBelowComp.length, 3, 'skipped-below-comp rows are aggregated across lanes');
 assert.match(result.logs.at(-1), /3\/3 lanes/, 'done log uses the lane list length, not an undefined queries.length');
 
+let cancelCalls = 0;
+const cancelledRun = await runSearchLanes(
+  [{ query: 'one' }, { query: 'two' }, { query: 'three' }],
+  2,
+  async (query) => {
+    cancelCalls += 1;
+    if (query === 'two') return { cancelled: true, results: [] };
+    return { results: [{ title: query, url: `https://example.com/${query}` }] };
+  },
+);
+assert.equal(cancelCalls, 2, 'a later lane must not run after cancel');
+assert.equal(cancelledRun.results.length, 1, 'results from lanes before cancel are kept');
+assert.match(cancelledRun.logs.join('\n'), /cancelled/, 'cancel is logged');
+
 const adapter = readFileSync(resolve('scripts', 'browser_adapter.mjs'), 'utf-8');
 assert.match(adapter, /splitQueries|runSearchLanes/, 'browser adapter uses the shared lane helpers');
+const singleFn = adapter.slice(adapter.indexOf('async function searchLinkedInSingle'), adapter.indexOf('async function searchLinkedIn('));
+assert.doesNotMatch(singleFn, /rmSync\(CANCEL_PATH/, 'a later lane must not clear the cancel flag');
+assert.match(adapter, /async function searchLinkedIn\([\s\S]*?rmSync\(CANCEL_PATH/, 'cancel flag is cleared once at the start of the whole search');
 assert.doesNotMatch(
   adapter,
   /across \$\{lanes\.length\}\/\$\{queries\.length\}/,

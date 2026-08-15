@@ -674,7 +674,10 @@ export async function extractLinkedInJobs(page, limit, options = {}) {
 }
 
 async function searchLinkedInSingle(query, limit = 10) {
-  try { if (existsSync(CANCEL_PATH)) rmSync(CANCEL_PATH, { force: true }); } catch {}
+  if (cancelled()) {
+    status({ state: 'cancelled', log: 'LinkedIn browser search was cancelled.' });
+    return [];
+  }
   status({ state: 'launching', log: `Starting LinkedIn browser search for: ${query || DEFAULT_QUERY}` });
   status({ state: 'launching', log: `Applying LinkedIn filters: ${linkedInFilterSummary()}` });
   const context = await launchContext(false);
@@ -774,6 +777,7 @@ async function searchLinkedInSingle(query, limit = 10) {
 // `limit` is the result quota for a single search. When the query holds several
 // `;`-separated lanes it becomes the per-lane quota, so every lane always runs.
 async function searchLinkedIn(queryInput, limit = 10, companyInput = '') {
+  try { if (existsSync(CANCEL_PATH)) rmSync(CANCEL_PATH, { force: true }); } catch {}
   const titleLanes = splitQueries(queryInput || DEFAULT_QUERY).map(query => ({ query }));
   const companyLanes = splitQueries(companyInput).map(company => ({ query: company, company }));
   const lanes = [...titleLanes, ...companyLanes];
@@ -781,7 +785,11 @@ async function searchLinkedIn(queryInput, limit = 10, companyInput = '') {
     return searchLinkedInSingle(lanes[0]?.query || DEFAULT_QUERY, limit);
   }
   const merged = await runSearchLanes(lanes, limit, async (query, perLane) => {
+    if (cancelled()) return { cancelled: true, results: [] };
     await searchLinkedInSingle(query, perLane);
+    if (cancelled()) {
+      try { return { ...JSON.parse(readFileSync(RESULTS_PATH, 'utf-8')), cancelled: true }; } catch { return { cancelled: true, results: [] }; }
+    }
     try { return JSON.parse(readFileSync(RESULTS_PATH, 'utf-8')); } catch { return {}; }
   }, message => status({ state: 'searching', log: message }));
   writeJsonAtomic(RESULTS_PATH, {
@@ -793,6 +801,10 @@ async function searchLinkedIn(queryInput, limit = 10, companyInput = '') {
     skippedBelowComp: merged.skippedBelowComp,
     results: merged.results,
   });
+  if (cancelled()) {
+    status({ state: 'cancelled', resultCount: merged.results.length, log: 'LinkedIn browser search was cancelled.' });
+    return merged.results;
+  }
   status({ state: 'done', resultCount: merged.results.length, log: merged.logs.at(-1) });
   return merged.results;
 }

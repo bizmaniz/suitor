@@ -62,6 +62,10 @@ export async function runSearchLanes(lanes_, perLane, searchFn, onLog = () => {}
   for (const [index, lane] of lanes_.entries()) {
     log(`LinkedIn lane ${index + 1}/${lanes_.length}: ${label(lane)}`);
     const payload = await searchFn(lane.query, perLane) || {};
+    if (payload.cancelled) {
+      log(`LinkedIn lane ${index + 1}/${lanes_.length} cancelled. Stopping the remaining searches.`);
+      break;
+    }
     filters = payload.filters || filters;
     inspected += Number(payload.inspectedUniqueCount || 0);
     for (const row of payload.skippedBelowComp || []) skippedBelowComp.push(row);
