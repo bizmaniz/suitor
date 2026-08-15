@@ -77,11 +77,12 @@ Quick Scan and Verified Scan read exclude keywords and automatic-rejection phras
 | Env var | Use |
 |---|---|
 | `SUITOR_LINKEDIN_QUERY` | Default LinkedIn query |
-| `SUITOR_LINKEDIN_LOCATION` | Location filter |
+| `SUITOR_LINKEDIN_LOCATION` | Location filter (free-text; LinkedIn treats this as advisory) |
+| `SUITOR_LINKEDIN_GEO_ID` | LinkedIn `geoId` (default `103644278` = United States). Set `none` to omit it. |
 | `SUITOR_LINKEDIN_WORKPLACE` | Workplace type |
 | `SUITOR_LINKEDIN_EXPERIENCE` | Experience levels |
 | `SUITOR_LINKEDIN_RECENCY` | Recency filter |
-| `SUITOR_LINKEDIN_SALARY_BUCKET` | Salary bucket |
+| `SUITOR_LINKEDIN_SALARY_BUCKET` | Salary bucket (default `5`). Set `none` to omit `f_SB2` so postings without disclosed pay still appear. |
 | `SUITOR_LINKEDIN_LIMIT` | Result cap |
 | `SUITOR_LINKEDIN_INSPECT_LIMIT` | Inspection cap |
 | `SUITOR_LINKEDIN_MAX_PASSES` | Pagination cap |

@@ -3281,7 +3281,16 @@ function writeBrowserStatusPatch(patch, logLine = '') {
 }
 
 function browserProfileProcessIds() {
-  if (process.platform !== 'win32') return [];
+  if (process.platform !== 'win32') {
+    const result = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf-8' });
+    if (result.error) return [];
+    const needle = BROWSER_PROFILE_DIR.toLowerCase();
+    return String(result.stdout || '')
+      .split('\n')
+      .filter(line => line.toLowerCase().includes(needle))
+      .map(line => Number(line.trim().split(/\s+/)[0]))
+      .filter(pid => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+  }
   const escapedProfile = BROWSER_PROFILE_DIR.replace(/'/g, "''").toLowerCase();
   const script = [
     `$needle = '${escapedProfile}'`,
@@ -3301,18 +3310,19 @@ function browserProfileProcessIds() {
 }
 
 function releaseBrowserProfileProcesses() {
-  if (process.platform !== 'win32') return [];
   const pids = browserProfileProcessIds();
   for (const pid of pids) {
     try {
       process.kill(pid, 'SIGTERM');
     } catch {}
-    try {
-      spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-        encoding: 'utf-8',
-        windowsHide: true,
-      });
-    } catch {}
+    if (process.platform === 'win32') {
+      try {
+        spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+          encoding: 'utf-8',
+          windowsHide: true,
+        });
+      } catch {}
+    }
   }
   return pids;
 }
