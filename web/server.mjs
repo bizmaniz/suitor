@@ -9,8 +9,20 @@ import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
+import { streamCursorPrompt } from './cursor_agent.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import {
+  loadProviderSecrets,
+  saveProviderSecretsFile,
+  restrictPrivateFile,
+  cursorApiKeyFrom,
+  childEnvForCli,
+  childEnvForCursorScan,
+  nodeVersionAtLeast,
+} from './provider_secrets.mjs';
+import { collectCursorContext, formatCursorContextMarkdown } from './cursor_context.mjs';
+import { claudeTextOnlyArgs } from './claude_cli.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -183,9 +195,52 @@ const AUTH_FAILURE_LIMIT = Number(process.env.SUITOR_AUTH_FAILURE_LIMIT || 5);
 const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS || 5 * 60 * 1000);
 const authFailures = new Map();
 
+// Provider API keys live in their own 0600 file under the runtime root, next
+// to the app token - never in suitor.config.json, which people copy around
+// when debugging.
+const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
+let providerSecretsUnreadable = '';
+
+function providerSecrets() {
+  const loaded = loadProviderSecrets(PROVIDER_SECRETS_PATH);
+  providerSecretsUnreadable = loaded.error || '';
+  if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+  return loaded.secrets;
+}
+
+function saveProviderSecrets(next) {
+  providerSecrets();
+  if (providerSecretsUnreadable) {
+    const err = new Error(`Refusing to overwrite ${PROVIDER_SECRETS_PATH} (${providerSecretsUnreadable}). Move or repair the file, then save again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  mkdirSync(DATA_ROOT, { recursive: true });
+  saveProviderSecretsFile(PROVIDER_SECRETS_PATH, next);
+  restrictPrivateFile(PROVIDER_SECRETS_PATH);
+}
+
+function cursorApiKey() {
+  return cursorApiKeyFrom(process.env, providerSecrets());
+}
+
+function cursorFromEnvironment() {
+  return Boolean(String(process.env.CURSOR_API_KEY || '').trim());
+}
+
+function cursorConfigured() {
+  return Boolean(cursorApiKey());
+}
+
+function cursorKeyHint() {
+  const key = cursorApiKey();
+  return key ? `${key.slice(0, 4)}…` : '';
+}
+
 function localClaudeEnv() {
   return {
-    ...process.env,
+    ...childEnvForCli(process.env, { provider: String(config.llm?.provider || '') }),
+    SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
     SUITOR_RUNTIME_ROOT: DATA_ROOT,
@@ -3585,6 +3640,11 @@ ${recentHistory}
 
 Attached/uploaded files:
 ${attachmentLines}
+${String(config.llm?.provider || '').toLowerCase() === 'cursor' ? `\n${formatCursorContextMarkdown(collectCursorContext({
+    profilePaths: [docs.profile],
+    trackerPath: TRACKER_PATH,
+    attachments,
+  }))}` : ''}
 
 User request:
 ${message}`;
@@ -4126,12 +4186,54 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/env-check' && req.method === 'GET') {
     return send(res, 200, {
-      node: { version: process.version, ok: Number(process.versions.node.split('.')[0]) >= 22 },
+      node: { version: process.version, ok: nodeVersionAtLeast(process.versions.node, '22.13.0') },
       codex: detectCli('codex'),
       claude: detectCli('claude'),
+      cursor: {
+        configured: cursorConfigured(),
+        fromEnvironment: cursorFromEnvironment(),
+        hint: cursorKeyHint(),
+      },
       configPath: config.configPath,
       profileRoot: PROFILE_ROOT,
       runtimeRoot: DATA_ROOT,
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    if (body.apiKey !== undefined && (typeof body.apiKey !== 'string' || body.apiKey.length > 400)) {
+      return send(res, 400, { error: 'apiKey must be a string of at most 400 characters.' });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.cursor || {};
+    const apiKey = String(body.apiKey || '').trim() || String(current.apiKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.cursor;
+    } else if (apiKey) {
+      secrets.cursor = { apiKey };
+    } else {
+      delete secrets.cursor;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
     });
   }
 
@@ -4858,6 +4960,9 @@ async function handleApi(req, res, pathname) {
     if (!message) return send(res, 400, { error: 'Message is required' });
     if (isVerifiedScanRequest(message)) return streamVerifiedScanChat(message, res);
     const prompt = buildAgentPrompt({ message, view: body.view, attachments: body.attachments });
+    if (config.llm?.provider === 'cursor') {
+      return streamCursor(prompt, res, { displayUserMessage: message, model: body.model });
+    }
     if ((config.llm?.provider || 'openai') === 'anthropic') {
       return streamClaude(prompt, res, { displayUserMessage: message });
     }
@@ -4928,6 +5033,38 @@ function streamHeaders(res) {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Accel-Buffering': 'no',
+  });
+}
+
+function streamCursor(message, res, options = {}) {
+  streamHeaders(res);
+  appendChatLog({ role: 'user', at: new Date().toISOString(), message: options.displayUserMessage || message });
+  setImmediate(async () => {
+    let assistantText = '';
+    try {
+      assistantText = await streamCursorPrompt({
+        prompt: message,
+        cwd: PROFILE_ROOT,
+        model: options.model || config.llm?.model,
+        apiKey: cursorApiKey(),
+        onText: chunk => res.write(chunk),
+      });
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: assistantText });
+      if (options.localEdit) {
+        const event = `\n\n[app-action] ${JSON.stringify(options.localEdit)}\n`;
+        assistantText += event;
+        res.write(event);
+      }
+      res.write('\n\n[process exited with code 0]\n');
+      res.end();
+    } catch (err) {
+      const text = `The Cursor assistant could not answer. ${err.message}\n`;
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message: assistantText || text });
+      if (!res.writableEnded) {
+        res.write(`${text}\n[process exited with code 1]\n`);
+        res.end();
+      }
+    }
   });
 }
 
@@ -5054,7 +5191,7 @@ function streamProcess(command, args, res) {
 function streamVerifiedScanReport(res) {
   streamHeaders(res);
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will direct-fetch shortlisted URLs, score them against the locked profile, and save the dated report.\n\n`);
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', chunk => {
@@ -5084,7 +5221,7 @@ function streamVerifiedScanReport(res) {
 function streamVerifiedScanChat(userMessage, res) {
   streamHeaders(res);
   appendChatLog({ role: 'user', at: new Date().toISOString(), message: userMessage });
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will save the dated scan report and return the shortlist here.\n\n`);
@@ -5112,13 +5249,164 @@ function streamVerifiedScanChat(userMessage, res) {
   });
 }
 
+
+function normalizeClaudeModel(value) {
+  const model = String(value || '').trim().toLowerCase();
+  if (['haiku', 'sonnet', 'opus'].includes(model)) return model;
+  if (/^claude-[a-z0-9.-]+$/.test(model)) return model;
+  return '';
+}
+
+function tailorSafeName(value) {
+  return String(value || 'Draft').replace(/[^A-Za-z0-9 ._-]+/g, '_').replace(/^[ ._-]+|[ ._-]+$/g, '').slice(0, 80) || 'Draft';
+}
+
+function tailorFlaggedLanguage(text) {
+  return ['delve', 'tapestry', 'proven track record', 'results-driven'].filter(flag => new RegExp(`\\b${flag}\\b`, 'i').test(text));
+}
+
+async function generateResumeDocxFromMarkdown(markdownText) {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const inPath = resolve(DATA_ROOT, `resume-draft-${stamp}.md`);
+  const outPath = resolve(DATA_ROOT, `resume-draft-${stamp}.docx`);
+  try {
+    writeTextAtomic(inPath, markdownText);
+    await runPythonExtraction([packageScriptPath('render_resume_docx.py'), inPath, outPath], '.docx');
+    if (!existsSync(outPath)) throw new Error('DOCX generation produced no file.');
+    return readFileSync(outPath);
+  } finally {
+    try { rmSync(inPath, { force: true }); } catch {}
+    try { rmSync(outPath, { force: true }); } catch {}
+  }
+}
+
+async function tailorWithClaude(payload, res) {
+  let resumeText = '';
+  try { resumeText = readFileSync(RESUME_PREVIEW_PATH, 'utf-8').trim(); } catch {}
+  if (resumeText.length < 200) {
+    const canonical = inferCanonicalMasterResume();
+    const textPath = canonical?.path && existsSync(`${canonical.path}.txt`) ? `${canonical.path}.txt` : '';
+    if (textPath) resumeText = readFileSync(textPath, 'utf-8').trim();
+  }
+  if (resumeText.length < 200) throw new Error('no usable master resume text was found');
+  const profileBits = [];
+  try {
+    const profile = JSON.parse(readFileSync(resolve(PROFILE_ROOT, 'Candidate Search Profile.json'), 'utf-8'));
+    for (const [label, value] of [
+      ['Career direction', profile?.targetRoleDirection?.summary],
+      ['Role evidence', profile?.roleEvidence?.summary],
+      ['Strengths', profile?.strengths?.summary],
+    ]) {
+      if (value) profileBits.push(`${label}: ${String(value).slice(0, 1200)}`);
+    }
+  } catch {}
+  const voice = String(config.intake?.tier2?.voice || '').trim();
+  if (voice) profileBits.push(`Voice guardrails: ${voice.slice(0, 800)}`);
+  const model = normalizeClaudeModel(config.llm?.model);
+  res.write(`Tailoring ${payload.role} at ${payload.company} against the current master resume. This usually takes a minute or two.\n\n`);
+  const prompt = [
+    'You are tailoring job-application materials. Use ONLY facts present in the master resume and candidate profile below. Never invent employers, titles, dates, metrics, or credentials. You may reorder, reword, emphasize, and cut.',
+    '',
+    'Output exactly two fenced blocks and nothing else:',
+    '1) A block starting with ```resume-draft and ending with ``` containing the COMPLETE tailored resume in markdown: # for the candidate name line, a plain contact line, ## section headings, ### role/company lines, "- " bullets, **bold** for emphasis. ATS-plain: one column, no tables, no images.',
+    '2) A block starting with ```cover-letter and ending with ``` containing a complete, specific cover letter under 320 words, grounded in the candidate\'s real experience and the company\'s actual context from the job description. No salary discussion. Never open with "I am writing to".',
+    '',
+    'Style: plain, confident, concrete. Avoid: delve, tapestry, proven track record, results-driven, leverage as filler. Do not start consecutive sentences with "I".',
+    '',
+    profileBits.length ? `Candidate profile:\n${profileBits.join('\n')}` : '',
+    '',
+    `Master resume:\n${resumeText.slice(0, 9000)}`,
+    '',
+    `Target job:\nCompany: ${payload.company}\nRole: ${payload.role}\nJob description:\n${payload.jdText.slice(0, 9000)}`,
+  ].join('\n');
+  const output = await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    const args = claudeTextOnlyArgs({ model });
+    const child = spawn(resolveClaudeBin(), args, { cwd: PROFILE_ROOT, shell: false, env: localClaudeEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
+    let out = '';
+    let err = '';
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      try { child.kill('SIGKILL'); } catch {}
+      rejectPromise(new Error('tailoring timed out'));
+    }, 300000);
+    child.stdout.on('data', chunk => { out += chunk.toString(); });
+    child.stderr.on('data', chunk => { err += chunk.toString(); });
+    child.on('error', e => { if (settled) return; settled = true; clearTimeout(timer); rejectPromise(e); });
+    child.on('close', code => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (code === 0) resolvePromise(out);
+      else rejectPromise(new Error(((err.trim() || out.trim().slice(-220) || `exit ${code}`)).slice(0, 220)));
+    });
+    child.stdin.end(prompt);
+  });
+  const resumeMatch = output.match(/```resume-draft\s*\n([\s\S]*?)\n\s*```/);
+  const letterMatch = output.match(/```cover-letter\s*\n([\s\S]*?)\n\s*```/);
+  const resumeMarkdown = resumeMatch ? resumeMatch[1].trim() : '';
+  const letterMarkdown = letterMatch ? letterMatch[1].trim() : '';
+  if (resumeMarkdown.length < 400 || letterMarkdown.length < 200) throw new Error('the assistant reply did not contain complete drafts');
+  const company = tailorSafeName(payload.company);
+  const role = tailorSafeName(payload.role);
+  const candidate = tailorSafeName(CANDIDATE_NAME || 'Candidate');
+  const folder = resolve(PROFILE_ROOT, 'Applications', `${company} - ${role}`);
+  mkdirSync(folder, { recursive: true });
+  const files = [];
+  const resumeMd = resolve(folder, `${candidate} - Resume Draft - ${company} - ${role}.md`);
+  const letterMd = resolve(folder, `${candidate} - Cover Letter Draft - ${company} - ${role}.md`);
+  writeTextAtomic(resumeMd, `${resumeMarkdown}\n`);
+  writeTextAtomic(letterMd, `${letterMarkdown}\n`);
+  files.push(resumeMd, letterMd);
+  try {
+    const resumeDocx = resolve(folder, `${candidate} - Resume Draft - ${company} - ${role}.docx`);
+    const letterDocx = resolve(folder, `${candidate} - Cover Letter Draft - ${company} - ${role}.docx`);
+    writeBufferAtomic(resumeDocx, await generateResumeDocxFromMarkdown(resumeMarkdown));
+    writeBufferAtomic(letterDocx, await generateResumeDocxFromMarkdown(letterMarkdown));
+    files.push(resumeDocx, letterDocx);
+  } catch (docxErr) {
+    res.write(`DOCX rendering was skipped (${String(docxErr.message || docxErr).slice(0, 160)}). Markdown drafts are still ready.\n\n`);
+  }
+  const flagged = tailorFlaggedLanguage(`${resumeMarkdown}\n${letterMarkdown}`);
+  return [
+    'Package ready — tailored from the current master resume.',
+    'For ATS portals, upload the DOCX resume unless the portal asks for PDF.',
+    '',
+    flagged.length
+      ? `Warning: writing scan flagged ${flagged.join(', ')}. Review before submitting.`
+      : 'Writing scan passed: no flagged AI-writing language found.',
+    'Review every line before submitting - tailoring rearranges your real evidence, but you are accountable for accuracy.',
+    '',
+    'Files:',
+    ...files.map(file => `Download: ${basename(file)} | /api/download?path=${encodeURIComponent(encodeDownloadPath(resolve(file)))}`),
+  ].join('\n');
+}
+
 function streamTailorPackage(payload, res) {
   streamHeaders(res);
+  appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
+  setImmediate(async () => {
+    if (String(config.llm?.provider || '').toLowerCase() === 'anthropic') {
+      try {
+        const message = await tailorWithClaude(payload, res);
+        appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message });
+        res.write(`${message}\n[process exited with code 0]\n`);
+        res.end();
+        return;
+      } catch (err) {
+        res.write(`Claude tailoring was not available: ${err.message}\nFalling back to the local draft generator. Codex and Cursor were not used.\n\n`);
+      }
+    }
+    streamTailorPackageLocal(payload, res);
+  });
+}
+
+function streamTailorPackageLocal(payload, res) {
   setImmediate(() => {
     const stamp = Date.now();
     const inputPath = packageInputPath('tailor', stamp);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
-    appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
     const pythonBin = resolvePythonBin();
     if (!pythonBin) {
       const message = 'Tailoring could not start because Python is not available. Install python3 or python and try again.';
