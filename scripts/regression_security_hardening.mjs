@@ -26,6 +26,14 @@ async function postJson({ port, token, path, value, headers = {} }) {
   return { res, body };
 }
 
+async function getJson({ port, token, path }) {
+  const res = await fetch(`http://127.0.0.1:${port}${path}`, {
+    headers: { 'X-Suitor-App-Token': token },
+  });
+  const body = await res.json().catch(async () => ({ raw: await res.text().catch(() => '') }));
+  return { res, body };
+}
+
 async function rawJsonRequest({ port, path, value, headers = {} }) {
   const body = JSON.stringify(value);
   return await new Promise((resolvePromise, reject) => {
@@ -432,12 +440,120 @@ async function assertLanHostAllowlistWarning() {
   }
 }
 
+async function assertLinkedInConnectionExtrasSurvive() {
+  const profileRoot = mkdtempSync(join(tmpdir(), 'suitor-linkedin-extras-profile-'));
+  const configDir = mkdtempSync(join(tmpdir(), 'suitor-linkedin-extras-config-'));
+  const port = 26500 + Math.floor(Math.random() * 1000);
+  const runtimeRoot = resolve(profileRoot, '.suitor-runtime');
+  const tokenPath = resolve(runtimeRoot, 'linkedinextras.app-token');
+  const child = spawn(process.execPath, ['web/server.mjs'], {
+    cwd: APP_ROOT,
+    env: {
+      ...process.env,
+      SUITOR_CONFIG_DIR: configDir,
+      SUITOR_PERSON_KEY: 'linkedinextras',
+      SUITOR_PROFILE_ROOT: profileRoot,
+      SUITOR_PORT: String(port),
+      SUITOR_CANDIDATE_NAME: 'LinkedIn Extras Candidate',
+      SUITOR_CANDIDATE_FIRST: 'LinkedIn',
+      SUITOR_ASSISTANT_NAME: 'Assistant',
+    },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stdout = '';
+  let stderr = '';
+  child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+  child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+  const extras = {
+    searchQuery: '"director" OR "program manager"',
+    status: 'ready',
+    dataStored: 'keep-me',
+  };
+  try {
+    const token = await waitForSuitorServer({
+      port,
+      tokenPath,
+      child,
+      getOutput: () => `${stdout}\n${stderr}`,
+    });
+
+    const seed = await postJson({
+      port,
+      token,
+      path: '/api/onboarding',
+      value: {
+        assistantName: 'Assistant',
+        connections: {
+          linkedin: { enabled: false, ...extras },
+          providers: { greenhouse: true, websearch: false },
+        },
+        onboarded: true,
+      },
+    });
+    assert.equal(seed.res.status, 200, JSON.stringify(seed.body));
+    assert.equal(seed.body.config.connections.linkedin.searchQuery, extras.searchQuery);
+
+    const toggle = await postJson({
+      port,
+      token,
+      path: '/api/onboarding',
+      value: {
+        assistantName: 'Assistant',
+        connections: { linkedin: { enabled: true } },
+      },
+    });
+    assert.equal(toggle.res.status, 200, JSON.stringify(toggle.body));
+    const afterToggle = toggle.body.config.connections.linkedin;
+    assert.equal(afterToggle.enabled, true, JSON.stringify(afterToggle));
+    assert.equal(afterToggle.searchQuery, extras.searchQuery, `onboarding POST wiped linkedin extras: ${JSON.stringify(afterToggle)}`);
+    assert.equal(afterToggle.status, extras.status, JSON.stringify(afterToggle));
+    assert.equal(afterToggle.dataStored, extras.dataStored, JSON.stringify(afterToggle));
+
+    const disconnect = await postJson({
+      port,
+      token,
+      path: '/api/connections/linkedin/disconnect',
+      value: {},
+    });
+    assert.equal(disconnect.res.status, 200, JSON.stringify(disconnect.body));
+
+    const afterDisconnect = await getJson({ port, token, path: '/api/onboarding' });
+    assert.equal(afterDisconnect.res.status, 200, JSON.stringify(afterDisconnect.body));
+    const afterOff = afterDisconnect.body.config.connections.linkedin;
+    assert.equal(afterOff.enabled, false, JSON.stringify(afterOff));
+    assert.equal(afterOff.searchQuery, extras.searchQuery, `disconnect wiped linkedin extras: ${JSON.stringify(afterOff)}`);
+    assert.equal(afterOff.status, extras.status, JSON.stringify(afterOff));
+    assert.equal(afterOff.dataStored, extras.dataStored, JSON.stringify(afterOff));
+
+    const saved = JSON.parse(readFileSync(resolve(configDir, 'suitor.config.json'), 'utf-8'));
+    assert.equal(saved.connections.linkedin.searchQuery, extras.searchQuery);
+    assert.equal(saved.connections.linkedin.enabled, false);
+  } catch (err) {
+    err.message += `\nlinkedin extras server stdout:\n${stdout}\nlinkedin extras server stderr:\n${stderr}`;
+    throw err;
+  } finally {
+    if (child.exitCode == null) child.kill();
+    await delay(250);
+    rmSync(profileRoot, { recursive: true, force: true });
+    rmSync(configDir, { recursive: true, force: true });
+  }
+
+  const appJs = readFileSync(resolve(APP_ROOT, 'web', 'static', 'app.js'), 'utf-8');
+  assert.match(
+    appJs,
+    /\.\.\.\(cfg\.connections\?\.linkedin \|\| \{\}\)/,
+    'onboarding/settings submit must spread the existing LinkedIn block before overriding enabled',
+  );
+  assert.match(appJs, /wholesale replace wipes extra keys/i);
+}
+
 try {
   assertAgentSandboxSource();
   await assertUploadPathSafety();
   await assertAuthRateLimit();
   await assertLanModeUrlSafety();
   await assertLanHostAllowlistWarning();
+  await assertLinkedInConnectionExtrasSurvive();
   console.log('security hardening regression passed');
 } catch (err) {
   console.error('security hardening regression failed');

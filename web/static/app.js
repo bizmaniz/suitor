@@ -2290,7 +2290,9 @@ async function showOnboardingWizard(force = false) {
       },
       connections: {
         ...(cfg.connections || {}),
-        linkedin: { enabled: form.get('linkedin') === 'on' },
+        // Spread the existing block: a wholesale replace wipes extra keys
+        // (searchQuery, status, dataStored) that settings must not drop.
+        linkedin: { ...(cfg.connections?.linkedin || {}), enabled: form.get('linkedin') === 'on' },
         providers: { ...(cfg.connections?.providers || {}), websearch: form.get('websearch') === 'on' },
         rssFeeds: String(form.get('rssFeeds') || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean),
         targetCompanies: String(form.get('targetCompanies') || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean),
