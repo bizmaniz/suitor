@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Suitor</title>
-  <link rel="stylesheet" href="/styles.css?v=20260815-pr25-sync">
+  <link rel="stylesheet" href="/styles.css?v=20260815-pr25-owner-fixes">
 </head>
 <body>
   <div class="app-shell">
@@ -368,6 +368,22 @@
             </div>
             <p id="cursorKeyResult" class="helper-text"></p>
           </section>
+          <section class="setting-card" id="adzunaKeyCard">
+            <div class="setting-card-header">
+              <div>
+                <h3>Adzuna API Keys</h3>
+                <p>Stored in provider-secrets.json, not suitor.config.json. Replace or remove them here. They are passed only to the Adzuna scan process.</p>
+              </div>
+            </div>
+            <p id="adzunaKeyStatus" class="helper-text">Checking Adzuna key status…</p>
+            <input id="adzunaAppIdInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a new App ID to replace the stored one">
+            <input id="adzunaAppKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a new App Key to replace the stored one">
+            <div class="connection-actions">
+              <button id="saveAdzunaKeyBtn" class="button-primary compact" type="button">Save Key</button>
+              <button id="removeAdzunaKeyBtn" class="button-secondary compact" type="button">Remove</button>
+            </div>
+            <p id="adzunaKeyResult" class="helper-text"></p>
+          </section>
         </div>
       </section>
     </main>
@@ -428,6 +444,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260815-pr25-sync" type="module"></script>
+  <script src="/app.js?v=20260815-pr25-owner-fixes" type="module"></script>
 </body>
 </html>

@@ -148,6 +148,12 @@ const els = {
   saveCursorKeyBtn: $('#saveCursorKeyBtn'),
   removeCursorKeyBtn: $('#removeCursorKeyBtn'),
   cursorKeyResult: $('#cursorKeyResult'),
+  adzunaKeyStatus: $('#adzunaKeyStatus'),
+  adzunaAppIdInput: $('#adzunaAppIdInput'),
+  adzunaAppKeyInput: $('#adzunaAppKeyInput'),
+  saveAdzunaKeyBtn: $('#saveAdzunaKeyBtn'),
+  removeAdzunaKeyBtn: $('#removeAdzunaKeyBtn'),
+  adzunaKeyResult: $('#adzunaKeyResult'),
 };
 
 function headers(extra = {}) {
@@ -2787,6 +2793,7 @@ async function bootstrap() {
     state.linkedinLanes = parseLaneList(data.connections?.linkedin?.searchQuery || data.connections?.linkedinSearchQuery || '');
     renderLinkedInLanes();
     await refreshCursorKeyStatus();
+    await refreshAdzunaKeyStatus();
     if (state.activeView === 'scans' && state.lastScanRaw) renderScanResults(state.lastScanRaw);
     renderOnboardingNudges(state.onboarding);
     await showOnboardingWizard(false);
@@ -3220,6 +3227,18 @@ async function loadJobBoard() {
     if (await pollJdJobs()) scheduleJdJobsPoll();
   } catch (err) {
     els.boardResults.innerHTML = `<div class="empty-mini">${escapeHtml(apiErrorMessage(err.message) || 'Could not load the job board.')}</div>`;
+  }
+}
+
+async function refreshAdzunaKeyStatus() {
+  if (!els.adzunaKeyStatus) return;
+  try {
+    const data = await api('/api/adzuna');
+    if (data.fromEnvironment) els.adzunaKeyStatus.textContent = 'Adzuna keys are set from ADZUNA_APP_ID / ADZUNA_APP_KEY in the environment.';
+    else if (data.configured) els.adzunaKeyStatus.textContent = `Adzuna keys are stored (${data.appIdHint || 'set'}). Replace or remove them below.`;
+    else els.adzunaKeyStatus.textContent = 'No Adzuna keys stored. Paste an App ID and App Key to include Adzuna in scans.';
+  } catch (err) {
+    els.adzunaKeyStatus.textContent = apiErrorMessage(err.message) || 'Could not read Adzuna key status.';
   }
 }
 
@@ -3820,6 +3839,32 @@ els.removeCursorKeyBtn?.addEventListener('click', async () => {
     await refreshCursorKeyStatus();
   } catch (err) {
     if (els.cursorKeyResult) els.cursorKeyResult.textContent = apiErrorMessage(err.message);
+  }
+});
+els.saveAdzunaKeyBtn?.addEventListener('click', async () => {
+  const appId = els.adzunaAppIdInput?.value.trim() || '';
+  const appKey = els.adzunaAppKeyInput?.value.trim() || '';
+  if (!appId && !appKey) {
+    if (els.adzunaKeyResult) els.adzunaKeyResult.textContent = 'Paste an App ID or App Key first.';
+    return;
+  }
+  try {
+    await api('/api/adzuna', { method: 'POST', body: JSON.stringify({ ...(appId ? { appId } : {}), ...(appKey ? { appKey } : {}) }) });
+    if (els.adzunaAppIdInput) els.adzunaAppIdInput.value = '';
+    if (els.adzunaAppKeyInput) els.adzunaAppKeyInput.value = '';
+    if (els.adzunaKeyResult) els.adzunaKeyResult.textContent = 'Adzuna keys saved.';
+    await refreshAdzunaKeyStatus();
+  } catch (err) {
+    if (els.adzunaKeyResult) els.adzunaKeyResult.textContent = apiErrorMessage(err.message);
+  }
+});
+els.removeAdzunaKeyBtn?.addEventListener('click', async () => {
+  try {
+    await api('/api/adzuna', { method: 'POST', body: JSON.stringify({ clear: true }) });
+    if (els.adzunaKeyResult) els.adzunaKeyResult.textContent = 'Adzuna keys removed.';
+    await refreshAdzunaKeyStatus();
+  } catch (err) {
+    if (els.adzunaKeyResult) els.adzunaKeyResult.textContent = apiErrorMessage(err.message);
   }
 });
 

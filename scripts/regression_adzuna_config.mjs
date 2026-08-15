@@ -68,8 +68,15 @@ const adzunaSource = readFileSync(resolve(APP_ROOT, 'providers', 'adzuna.mjs'), 
 assert.doesNotMatch(adzunaSource, /Atlanta/, 'Adzuna fallback where must not default to Atlanta');
 assert.doesNotMatch(adzunaSource, /Chief of Staff/, 'Adzuna fallback what must not default to Chief of Staff');
 
+const html = readFileSync(resolve(APP_ROOT, 'web', 'static', 'index.html'), 'utf-8');
+assert.match(html, /id="adzunaKeyCard"/, 'Settings has an Adzuna key card like the Cursor card');
+assert.match(html, /id="removeAdzunaKeyBtn"/, 'Adzuna card has a visible Remove control');
+assert.match(html, /id="saveAdzunaKeyBtn"/, 'Adzuna card has a visible Save Key control');
+
 const app = readFileSync(resolve(APP_ROOT, 'web', 'static', 'app.js'), 'utf-8');
 assert.match(app, /fieldAdzuna|adzunaAppId|Adzuna API/, 'connections UI exposes Adzuna credentials');
+assert.match(app, /removeAdzunaKeyBtn/, 'Remove control is wired');
+assert.match(app, /clear: true/, 'Adzuna remove uses the existing clear flag');
 assert.doesNotMatch(app, /Atlanta OR Remote/, 'Adzuna UI must not ship Atlanta as a default');
 assert.doesNotMatch(app, /Chief of Staff/, 'Adzuna UI must not ship Chief of Staff as a default');
 
