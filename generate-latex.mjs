@@ -28,7 +28,7 @@ const REQUIRED_SECTIONS = [
 const REQUIRED_COMMANDS = [
   '\\\\resumeSubheading',
   '\\\\resumeItem',
-  '\\\\resumeProjecAssistantding',
+  '\\\\resumeProjectHeading',
 ];
 
 async function main() {
@@ -82,12 +82,12 @@ async function main() {
   const lines = content.split('\n');
   let resumeItemCount = 0;
   let subheadingCount = 0;
-  let projecAssistantdingCount = 0;
+  let projectHeadingCount = 0;
 
   for (const line of lines) {
     if (/\\resumeItem\{/.test(line)) resumeItemCount++;
     if (/\\resumeSubheading[^C]/.test(line)) subheadingCount++;
-    if (/\\resumeProjecAssistantding/.test(line)) projecAssistantdingCount++;
+    if (/\\resumeProjectHeading/.test(line)) projectHeadingCount++;
   }
 
   // Check pdfgentounicode
@@ -106,7 +106,7 @@ async function main() {
     counts: {
       resumeItems: resumeItemCount,
       subheadings: subheadingCount,
-      projecAssistantdings: projecAssistantdingCount,
+      projectHeadings: projectHeadingCount,
     },
     issues,
     valid: issues.length === 0,

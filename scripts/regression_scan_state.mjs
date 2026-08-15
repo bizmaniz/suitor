@@ -101,6 +101,7 @@ const server = spawn(process.execPath, ['web/server.mjs'], {
   cwd: APP_ROOT,
   env: {
     ...process.env,
+    SUITOR_CONFIG_DIR: resolve(profileRoot, '.suitor-config'),
     SUITOR_PERSON_KEY: personKey,
     SUITOR_PROFILE_ROOT: profileRoot,
     SUITOR_PORT: String(port),
