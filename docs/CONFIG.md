@@ -71,6 +71,10 @@ Quick Scan and Verified Scan read exclude keywords and automatic-rejection phras
 | `SUITOR_WEBSEARCH_DELAY_MS` | Delay between web-search requests |
 | `SUITOR_VERIFIED_SCAN_LIMIT` | Max verified scan candidates |
 | `SUITOR_VERIFY_FETCH_CONCURRENCY` | Verified scan fetch concurrency |
+| `SUITOR_SCORING_MODEL` | Claude CLI model for verified-scan scoring (`sonnet` by default; `haiku` / `opus` / `claude-...` also accepted) |
+| `SUITOR_SCORING_BATCH` | Roles per Claude scoring call (default `10`, clamped to 4–25) |
+
+Verified scan scoring tries the Claude CLI first whenever it can run (not gated on `llm.provider`), then Codex, then a heuristic fallback that withholds scores.
 
 ## LinkedIn Browser
 

@@ -661,8 +661,7 @@ function extractJson(text) {
   return JSON.parse(raw);
 }
 
-function runCodexScoring(fetched) {
-  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+function buildScoringPrompt(fetched) {
   const scorable = fetched.map(item => ({
     title: item.title,
     company: item.company,
@@ -675,14 +674,22 @@ function runCodexScoring(fetched) {
     fetchedText: compactFetchedText(item.text),
   }));
   const floor = shortlistFloor();
-  const prompt = `
+  return `
 You are ${ASSISTANT_NAME}, the local career operating partner for ${CANDIDATE_NAME}.
 
 Task: score this verified scan shortlist against ${CANDIDATE_FIRST}'s locked profile. The app has already direct-fetched every URL; use only the fetched text, scan metadata, candidate profile, tracker, and scan prompt below. Do not mention any other user or profile.
 
 Rules:
 - Return JSON only, no markdown.
-- Use the scoring rubric in the profile and scan prompt. ${CANDIDATE_FIRST}'s shortlist floor is ${floor}/100.
+- Score every role on these six dimensions, which total 100. Use the whole range; do not cluster scores. Read the dimension meaning from the locked profile, scan prompt, and dealbreakers — not from assumptions about one career path.
+  - Role (0-25): how closely the actual scope matches the candidate's target work in the locked profile (function, seniority, remit, and stated must-haves). A wrong function or a scope below the stated level scores low.
+  - Environment (0-20): employer and culture fit against the profile's industry, stage, size, team notes, and dealbreakers.
+  - Compensation (0-20): posted compensation against the profile's floor and target. Undisclosed compensation scores low because it cannot be verified.
+  - Lifestyle (0-15): location and work mode against the profile's location, remote/hybrid preference, and relocation notes.
+  - Growth (0-10): whether the role advances the profile's stated career direction rather than moving sideways.
+  - Risk (0-10): likelihood of a screening rejection and role hazards — missing required credentials, title-altitude mismatch, unstable or contradictory signals. Higher score means lower risk.
+- Report the breakdown exactly as "Role x/25, Environment x/20, Compensation x/20, Lifestyle x/15, Growth x/10, Risk x/10 = TOTAL".
+- ${CANDIDATE_FIRST}'s shortlist floor is ${floor}/100. Also honor the profile's own weighting notes and hard filters where they conflict with nothing above.
 - If verificationState is JS-RENDERED, REDIRECTED, TIMEOUT, DEAD, or fetchedText lacks enough JD body to score responsibly, set score to null and scoreBreakdown to "withheld - needs full JD".
 - Do not invent compensation, location, responsibilities, reporting line, funding stage, or title altitude. Use "not stated" when absent.
 - Apply hard rejects and elevated screen-rejection-risk flags from the profile.
@@ -716,7 +723,7 @@ Return exactly this JSON shape:
       "location": "not stated",
       "postedComp": "not stated",
       "score": null,
-      "scoreBreakdown": "Role x/30, Company x/20, Comp x/12, Geo x/13, Growth x/10, Risk x/15 OR withheld - needs full JD",
+      "scoreBreakdown": "Role x/25, Environment x/20, Compensation x/20, Lifestyle x/15, Growth x/10, Risk x/10 OR withheld - needs full JD",
       "riskFlags": [],
       "source": "",
       "recommendedAction": ""
@@ -725,6 +732,39 @@ Return exactly this JSON shape:
   "notes": ""
 }
 `;
+}
+
+function runClaudeScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const claudeBin = process.env.SUITOR_CLAUDE_BIN || 'claude';
+  const model = process.env.SUITOR_SCORING_MODEL || 'sonnet';
+  const batchSize = Math.max(4, Math.min(Number(process.env.SUITOR_SCORING_BATCH || 10) || 10, 25));
+  const rows = [];
+  const notes = [];
+  const batchCount = Math.ceil(fetched.length / batchSize);
+  for (let start = 0; start < fetched.length; start += batchSize) {
+    const batch = fetched.slice(start, start + batchSize);
+    console.log(`Scoring batch ${Math.floor(start / batchSize) + 1}/${batchCount} (${batch.length} roles) with ${model}...`);
+    const result = spawnSync(claudeBin, ['-p', '--model', model], {
+      cwd: PROFILE_ROOT,
+      input: buildScoringPrompt(batch),
+      encoding: 'utf-8',
+      env: envBase(),
+      maxBuffer: 30 * 1024 * 1024,
+      timeout: 5 * 60 * 1000,
+    });
+    if (result.error) throw result.error;
+    if (result.status !== 0) throw new Error([result.stderr, result.stdout].filter(Boolean).join('\n\n').slice(0, 400) || `Claude exited with status ${result.status}`);
+    const parsed = extractJson(result.stdout);
+    rows.push(...(parsed.rows || []));
+    if (parsed.notes) notes.push(parsed.notes);
+  }
+  return { rows, notes: notes.join(' ') };
+}
+
+function runCodexScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const prompt = buildScoringPrompt(fetched);
   const outFile = resolve(RUNTIME_ROOT, `verified-scan-${Date.now()}.json`);
   const result = spawnSync(resolveCodexBin(), [
     'exec',
@@ -883,7 +923,12 @@ async function main() {
   let result;
   try {
     console.log(`Scoring ${fetched.length} verified candidates against ${CANDIDATE_FIRST}'s locked profile...`);
-    result = runCodexScoring(fetched);
+    try {
+      result = runClaudeScoring(fetched);
+    } catch (claudeErr) {
+      console.log(`Claude scoring unavailable (${String(claudeErr.message || claudeErr).slice(0, 120)}); trying codex...`);
+      result = runCodexScoring(fetched);
+    }
   } catch (err) {
     console.log(`Scoring fell back to Needs Verification because local model scoring failed: ${err.message}`);
     result = fallbackScoring(fetched, err.message);

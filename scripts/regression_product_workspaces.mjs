@@ -65,6 +65,40 @@ assert.match(serverSource, /manualMatches\.length[\s\S]+manual_review/, 'manual-
 assert.doesNotMatch(serverSource, /soft_floor_base_|hard_floor_base_|Salesforce-to-HubSpot|Hope Industrial/i, 'shared server code should not contain profile-specific scoring or resume history');
 assert.match(rootPortals, /tracked_companies:\s*\[\]/, 'checked-in portal config should not ship target companies');
 assert.match(rootPortals, /search_queries:\s*\[\]/, 'checked-in portal config should not ship profile-specific searches');
+
+const scanSource = readFileSync(resolve(APP_ROOT, 'scripts', 'verified_scan.mjs'), 'utf8');
+assert.match(scanSource, /function runClaudeScoring\(/, 'verified scan should score with the Claude CLI');
+assert.match(scanSource, /SUITOR_SCORING_MODEL/, 'verified scan should honor SUITOR_SCORING_MODEL');
+assert.match(scanSource, /SUITOR_SCORING_BATCH/, 'verified scan should honor SUITOR_SCORING_BATCH');
+const scanMain = scanSource.slice(scanSource.indexOf('async function main()'));
+const claudeScoreAt = scanMain.indexOf('runClaudeScoring(');
+const codexScoreAt = scanMain.indexOf('runCodexScoring(');
+const fallbackScoreAt = scanMain.indexOf('fallbackScoring(');
+assert(claudeScoreAt >= 0 && claudeScoreAt < codexScoreAt, 'Claude scoring should run before Codex');
+assert(codexScoreAt >= 0 && codexScoreAt < fallbackScoreAt, 'Codex scoring should run before heuristic fallback');
+assert.doesNotMatch(
+  scanSource,
+  /AI-enablement|C-suite|base city|\bitalo\b|Atlanta|italobelandria/i,
+  'scoring prompt must stay generic and must not hardcode one candidate career',
+);
+
+assert.match(serverSource, /function tailorWithClaude\(/, 'Tailor for This JD should try the Claude CLI');
+assert.match(
+  serverSource,
+  /function streamTailorPackage\([\s\S]*config\.llm\?\.provider === 'anthropic'[\s\S]*tailorWithClaude[\s\S]*streamTailorPackageLegacy/,
+  'anthropic provider should try Claude tailoring then fall back to the skeleton generator',
+);
+assert.match(serverSource, /generate_tailored_package\.py/, 'skeleton generator remains the fallback');
+assert.doesNotMatch(
+  serverSource,
+  /applyProfileLinksToMarkdown|italobelandria|github\.com\/italo/i,
+  'tailor path must not inject owner-specific profile links or URLs',
+);
+
+const configDoc = readFileSync(resolve(APP_ROOT, 'docs', 'CONFIG.md'), 'utf8');
+assert.match(configDoc, /SUITOR_SCORING_MODEL/, 'CONFIG.md should document SUITOR_SCORING_MODEL');
+assert.match(configDoc, /SUITOR_SCORING_BATCH/, 'CONFIG.md should document SUITOR_SCORING_BATCH');
+
 for (const view of ['applications', 'scans', 'capture', 'resume', 'learning', 'assessments', 'reference', 'settings']) {
   assert.match(indexHtml, new RegExp(`data-view="${view}"`), `${view} should be present in primary navigation`);
   assert.equal((indexHtml.match(new RegExp(`id="${view}View"`, 'g')) || []).length, 1, `${view} should have one workspace`);
