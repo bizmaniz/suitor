@@ -23,7 +23,7 @@ Suitor runs on your machine. There is no hosted Suitor service, no telemetry, an
 
 Requirements:
 
-- [Node.js 22.5 or newer](https://nodejs.org/en/download)
+- [Node.js 22.13 or newer](https://nodejs.org/en/download)
 - Git
 - One local AI account: OpenAI Codex (`codex`), Anthropic Claude Code (`claude`), or a [Cursor API key](https://cursor.com/dashboard/integrations)
 
@@ -116,7 +116,7 @@ Capture accepts pasted application emails and manually discovered roles without 
 - Local-only: profile, resume, scans, generated drafts, browser state, and SQLite database stay on your machine.
 - Localhost by default: the server binds to `127.0.0.1`. Non-loopback binding requires both `SUITOR_HOST` and the explicit `SUITOR_ALLOW_LAN=1` acknowledgement.
 - Trusted-network LAN mode: Suitor does not provide TLS. Set `SUITOR_ALLOWED_HOSTS` and expose it only on a network you trust.
-- No stored LLM keys: Suitor uses your local CLI authentication.
+- Codex and Claude use your local CLI login. Cursor stores a user API key in `provider-secrets.json` (not `suitor.config.json`); replace or remove it in Settings.
 - No stored LinkedIn password: LinkedIn uses a real browser session with manual login.
 - No auto-apply: Suitor scans and drafts. You confirm every application or message yourself.
 

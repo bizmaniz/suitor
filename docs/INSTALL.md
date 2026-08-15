@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Node.js 22.5 or newer
+- Node.js 22.13 or newer
 - Python 3
 - Git
 - OpenAI Codex CLI, Anthropic Claude Code CLI, or a [Cursor API key](https://cursor.com/dashboard/integrations)
@@ -32,7 +32,7 @@ $env:SUITOR_PORT="8788"; npm start
 
 ## macOS And Linux
 
-Use your package manager or `nvm` to install Node 22 or newer. With `nvm`:
+Use your package manager or `nvm` to install Node 22.13 or newer. With `nvm`:
 
 On Ubuntu or Debian, install Python, pip, and virtual-environment support first:
 
@@ -44,8 +44,8 @@ sudo apt install python3 python3-pip python3-venv
 Create a dedicated Python environment outside the repository, activate it, and then install Suitor:
 
 ```bash
-nvm install 22
-nvm use 22
+nvm install 22.13
+nvm use 22.13
 python3 --version
 mkdir -p "$HOME/.venvs"
 python3 -m venv "$HOME/.venvs/suitor"
@@ -157,7 +157,7 @@ export CURSOR_API_KEY=...
 # (mode 0600), never in suitor.config.json. Node 22.13+ is required for @cursor/sdk.
 ```
 
-Suitor never asks for API keys. It launches the local CLI after you authenticate that CLI yourself.
+Codex and Claude use local CLI login (`codex login` / `claude login`). Cursor needs a user API key from the Cursor dashboard: paste it in the setup wizard or Settings, or set `CURSOR_API_KEY`. The key is stored in `<runtime>/provider-secrets.json`, never in `suitor.config.json`.
 
 ## Ports, Firewall, And LAN Mode
 
