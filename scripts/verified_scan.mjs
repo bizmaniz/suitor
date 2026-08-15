@@ -6,6 +6,10 @@ import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
 import { assertSafeFetchUrl, strictUrlFetchEnabled } from '../providers/_url_safety.mjs';
+import { completeCursorPrompt } from '../web/cursor_agent.mjs';
+import { runSelectedScoring } from '../web/llm_routing.mjs';
+import { childEnvForCli } from '../web/provider_secrets.mjs';
+import { claudeBinFrom, runClaudeScoringBatches, scoringBatchFromEnv, scoringModelFromEnv } from '../web/claude_cli.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function envValue(name, legacyName, fallback = '') {
@@ -661,7 +665,7 @@ function extractJson(text) {
   return JSON.parse(raw);
 }
 
-function buildScoringPrompt(fetched) {
+function scoringPrompt(fetched) {
   const scorable = fetched.map(item => ({
     title: item.title,
     company: item.company,
@@ -674,7 +678,7 @@ function buildScoringPrompt(fetched) {
     fetchedText: compactFetchedText(item.text),
   }));
   const floor = shortlistFloor();
-  return `
+  const prompt = `
 You are ${ASSISTANT_NAME}, the local career operating partner for ${CANDIDATE_NAME}.
 
 Task: score this verified scan shortlist against ${CANDIDATE_FIRST}'s locked profile. The app has already direct-fetched every URL; use only the fetched text, scan metadata, candidate profile, tracker, and scan prompt below. Do not mention any other user or profile.
@@ -732,39 +736,12 @@ Return exactly this JSON shape:
   "notes": ""
 }
 `;
-}
-
-function runClaudeScoring(fetched) {
-  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
-  const claudeBin = process.env.SUITOR_CLAUDE_BIN || 'claude';
-  const model = process.env.SUITOR_SCORING_MODEL || 'sonnet';
-  const batchSize = Math.max(4, Math.min(Number(process.env.SUITOR_SCORING_BATCH || 10) || 10, 25));
-  const rows = [];
-  const notes = [];
-  const batchCount = Math.ceil(fetched.length / batchSize);
-  for (let start = 0; start < fetched.length; start += batchSize) {
-    const batch = fetched.slice(start, start + batchSize);
-    console.log(`Scoring batch ${Math.floor(start / batchSize) + 1}/${batchCount} (${batch.length} roles) with ${model}...`);
-    const result = spawnSync(claudeBin, ['-p', '--model', model], {
-      cwd: PROFILE_ROOT,
-      input: buildScoringPrompt(batch),
-      encoding: 'utf-8',
-      env: envBase(),
-      maxBuffer: 30 * 1024 * 1024,
-      timeout: 5 * 60 * 1000,
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error([result.stderr, result.stdout].filter(Boolean).join('\n\n').slice(0, 400) || `Claude exited with status ${result.status}`);
-    const parsed = extractJson(result.stdout);
-    rows.push(...(parsed.rows || []));
-    if (parsed.notes) notes.push(parsed.notes);
-  }
-  return { rows, notes: notes.join(' ') };
+  return prompt;
 }
 
 function runCodexScoring(fetched) {
   if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
-  const prompt = buildScoringPrompt(fetched);
+  const prompt = scoringPrompt(fetched);
   const outFile = resolve(RUNTIME_ROOT, `verified-scan-${Date.now()}.json`);
   const result = spawnSync(resolveCodexBin(), [
     'exec',
@@ -788,6 +765,30 @@ function runCodexScoring(fetched) {
   try {
     if (existsSync(outFile)) rmSync(outFile, { force: true });
   } catch {}
+  return extractJson(output);
+}
+
+function runClaudeScoring(fetched) {
+  return runClaudeScoringBatches({
+    fetched,
+    spawnSyncImpl: spawnSync,
+    bin: claudeBinFrom({}, process.env),
+    model: scoringModelFromEnv(process.env),
+    batchSize: scoringBatchFromEnv(process.env),
+    cwd: PROFILE_ROOT,
+    env: childEnvForCli(envBase(), { provider: 'anthropic' }),
+    buildPrompt: scoringPrompt,
+    extractJson,
+  });
+}
+
+async function runCursorScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const output = await completeCursorPrompt({
+    prompt: scoringPrompt(fetched),
+    cwd: PROFILE_ROOT,
+    apiKey: process.env.CURSOR_API_KEY || '',
+  });
   return extractJson(output);
 }
 
@@ -923,12 +924,14 @@ async function main() {
   let result;
   try {
     console.log(`Scoring ${fetched.length} verified candidates against ${CANDIDATE_FIRST}'s locked profile...`);
-    try {
-      result = runClaudeScoring(fetched);
-    } catch (claudeErr) {
-      console.log(`Claude scoring unavailable (${String(claudeErr.message || claudeErr).slice(0, 120)}); trying codex...`);
-      result = runCodexScoring(fetched);
-    }
+    result = await runSelectedScoring({
+      provider: String(process.env.SUITOR_LLM_PROVIDER || '').trim().toLowerCase(),
+      fetched,
+      runCursor: runCursorScoring,
+      runClaude: runClaudeScoring,
+      runCodex: runCodexScoring,
+      fallback: fallbackScoring,
+    });
   } catch (err) {
     console.log(`Scoring fell back to Needs Verification because local model scoring failed: ${err.message}`);
     result = fallbackScoring(fetched, err.message);

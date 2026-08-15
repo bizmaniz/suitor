@@ -20,10 +20,12 @@ Config file: `suitor.config.json` in `SUITOR_CONFIG_DIR` or `~/.suitor`.
 | Config field | Env var | Notes |
 |---|---|---|
 | `assistantName` | `SUITOR_ASSISTANT_NAME` | 1 to 40 characters in the wizard |
-| `llm.provider` | `SUITOR_LLM_PROVIDER` | `openai` or `anthropic` |
+| `llm.provider` | `SUITOR_LLM_PROVIDER` | `openai`, `anthropic`, or `cursor` |
 | `llm.codexBin` | `SUITOR_CODEX_BIN` | Optional explicit Codex path |
 | `llm.claudeBin` | `SUITOR_CLAUDE_BIN` | Optional explicit Claude path |
 | `llm.permissionMode` | `SUITOR_CLAUDE_PERMISSION_MODE` | Defaults to conservative CLI behavior |
+| — | `CURSOR_API_KEY` | Cursor user API key; overrides `<runtime>/provider-secrets.json`. Never stored in `suitor.config.json`. |
+| — | `SUITOR_CURSOR_MODEL` | Cursor model id, default `composer-2.5`. Node 22.13+ is required for the Cursor SDK. Settings can replace or remove the stored key. |
 
 ## Candidate Summary
 
@@ -71,10 +73,10 @@ Quick Scan and Verified Scan read exclude keywords and automatic-rejection phras
 | `SUITOR_WEBSEARCH_DELAY_MS` | Delay between web-search requests |
 | `SUITOR_VERIFIED_SCAN_LIMIT` | Max verified scan candidates |
 | `SUITOR_VERIFY_FETCH_CONCURRENCY` | Verified scan fetch concurrency |
-| `SUITOR_SCORING_MODEL` | Claude CLI model for verified-scan scoring (`sonnet` by default; `haiku` / `opus` / `claude-...` also accepted) |
+| `SUITOR_SCORING_MODEL` | Claude CLI model when `llm.provider` is `anthropic` (`sonnet` by default; `haiku` / `opus` / `claude-...` also accepted) |
 | `SUITOR_SCORING_BATCH` | Roles per Claude scoring call (default `10`, clamped to 4–25) |
 
-Verified scan scoring tries the Claude CLI first whenever it can run (not gated on `llm.provider`), then Codex, then a heuristic fallback that withholds scores.
+Verified scan scoring, chat, and tailoring honor the selected `llm.provider` (`openai`, `anthropic`, or `cursor`). If that provider fails, Suitor uses the local heuristic or skeleton fallback only. It does not silently hop to another paid vendor. Claude scoring and tailoring run as `claude -p` with tools disabled and session persistence off.
 
 ## LinkedIn Browser
 

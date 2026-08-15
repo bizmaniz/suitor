@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { chromium } from 'playwright';
 import { waitForSuitorServer } from './regression_server_wait.mjs';
+import './regression_claude_provider.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-workspaces-'));
@@ -67,28 +68,23 @@ assert.match(rootPortals, /tracked_companies:\s*\[\]/, 'checked-in portal config
 assert.match(rootPortals, /search_queries:\s*\[\]/, 'checked-in portal config should not ship profile-specific searches');
 
 const scanSource = readFileSync(resolve(APP_ROOT, 'scripts', 'verified_scan.mjs'), 'utf8');
-assert.match(scanSource, /function runClaudeScoring\(/, 'verified scan should score with the Claude CLI');
-assert.match(scanSource, /SUITOR_SCORING_MODEL/, 'verified scan should honor SUITOR_SCORING_MODEL');
-assert.match(scanSource, /SUITOR_SCORING_BATCH/, 'verified scan should honor SUITOR_SCORING_BATCH');
-const scanMain = scanSource.slice(scanSource.indexOf('async function main()'));
-const claudeScoreAt = scanMain.indexOf('runClaudeScoring(');
-const codexScoreAt = scanMain.indexOf('runCodexScoring(');
-const fallbackScoreAt = scanMain.indexOf('fallbackScoring(');
-assert(claudeScoreAt >= 0 && claudeScoreAt < codexScoreAt, 'Claude scoring should run before Codex');
-assert(codexScoreAt >= 0 && codexScoreAt < fallbackScoreAt, 'Codex scoring should run before heuristic fallback');
+assert.match(scanSource, /function runClaudeScoring\(/, 'verified scan should score with the Claude CLI when anthropic is selected');
+assert.match(scanSource, /runClaude:\s*runClaudeScoring/, 'verified scan should pass Claude into selected-provider routing');
+assert.match(scanSource, /runSelectedScoring\(/, 'verified scan should honor the selected provider instead of hopping vendors');
 assert.doesNotMatch(
   scanSource,
   /AI-enablement|C-suite|base city|\bitalo\b|Atlanta|italobelandria/i,
   'scoring prompt must stay generic and must not hardcode one candidate career',
 );
 
-assert.match(serverSource, /function tailorWithClaude\(/, 'Tailor for This JD should try the Claude CLI');
+assert.match(serverSource, /function tailorWithClaude\(/, 'Tailor for This JD should try the Claude CLI when anthropic is selected');
 assert.match(
   serverSource,
-  /function streamTailorPackage\([\s\S]*config\.llm\?\.provider === 'anthropic'[\s\S]*tailorWithClaude[\s\S]*streamTailorPackageLegacy/,
-  'anthropic provider should try Claude tailoring then fall back to the skeleton generator',
+  /function streamTailorPackage\([\s\S]*anthropic[\s\S]*tailorWithClaude[\s\S]*streamTailorPackageLocal/,
+  'anthropic provider should try Claude tailoring then fall back to the local generator',
 );
-assert.match(serverSource, /generate_tailored_package\.py/, 'skeleton generator remains the fallback');
+assert.match(serverSource, /Codex and Cursor were not used/, 'Claude tailoring fallback must not hop to another paid vendor');
+assert.match(serverSource, /generate_tailored_package\.py/, 'local generator remains the fallback');
 assert.doesNotMatch(
   serverSource,
   /applyProfileLinksToMarkdown|italobelandria|github\.com\/italo/i,
