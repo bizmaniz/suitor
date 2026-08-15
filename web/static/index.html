@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Suitor</title>
-  <link rel="stylesheet" href="/styles.css?v=20260721-product-workspaces">
+  <link rel="stylesheet" href="/styles.css?v=20260815-cursor-key-settings">
 </head>
 <body>
   <div class="app-shell">
@@ -328,6 +328,21 @@
               <a id="exportCalendarLink" class="button-secondary compact" href="/api/calendar/interviews.ics" target="_blank" rel="noreferrer">Export ICS</a>
             </div>
           </section>
+          <section class="setting-card" id="cursorKeyCard">
+            <div class="setting-card-header">
+              <div>
+                <h3>Cursor API Key</h3>
+                <p>Stored in provider-secrets.json, not suitor.config.json. Replace or remove it here. Codex and Claude still use local CLI login.</p>
+              </div>
+            </div>
+            <p id="cursorKeyStatus" class="helper-text">Checking Cursor key status…</p>
+            <input id="cursorKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a new Cursor API key to replace the stored one">
+            <div class="connection-actions">
+              <button id="saveCursorKeyBtn" class="button-primary compact" type="button">Save Key</button>
+              <button id="removeCursorKeyBtn" class="button-secondary compact" type="button">Remove</button>
+            </div>
+            <p id="cursorKeyResult" class="helper-text"></p>
+          </section>
         </div>
       </section>
     </main>
@@ -370,6 +385,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260721-product-workspaces" type="module"></script>
+  <script src="/app.js?v=20260815-cursor-key-settings" type="module"></script>
 </body>
 </html>
