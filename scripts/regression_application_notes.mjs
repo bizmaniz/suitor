@@ -5,7 +5,7 @@
 // tracker save, and applications.id is AUTOINCREMENT, so ids climb each time.
 // Notes and timeline entries key on normalized_company::normalized_role.
 
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { resolve } from 'path';
 import { DatabaseSync } from 'node:sqlite';
@@ -18,6 +18,11 @@ import {
   readApplicationNotes,
   upsertApplicationNotes,
 } from '../web/application_notes.mjs';
+
+const app = readFileSync(resolve('web', 'static', 'app.js'), 'utf-8');
+if (!app.includes('keepUnsavedNoteFields()')) {
+  throw new Error('timeline add/remove must keep unsaved salary/contact/applied-via/notes fields');
+}
 
 const dir = mkdtempSync(resolve(tmpdir(), 'suitor-appnotes-'));
 const db = new DatabaseSync(resolve(dir, 'test.sqlite'));

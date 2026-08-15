@@ -2457,6 +2457,20 @@ async function openApplicationPanel(card) {
     overlay.className = 'onboarding-overlay';
     document.body.append(overlay);
   }
+  const readUnsavedNoteFields = () => {
+    if (!$('#panelSalary')) return null;
+    return {
+      salary_asked: $('#panelSalary').value,
+      contact: $('#panelContact').value,
+      applied_via: $('#panelAppliedVia').value,
+      notes: $('#panelNotes').value,
+    };
+  };
+  const keepUnsavedNoteFields = () => {
+    const draft = readUnsavedNoteFields();
+    if (!draft) return;
+    data.notes = { ...(data.notes || {}), ...draft };
+  };
   const render = () => {
     const n = data.notes || {};
     overlay.innerHTML = `
@@ -2535,6 +2549,7 @@ async function openApplicationPanel(card) {
           method: 'POST',
           body: JSON.stringify({ company, role, note, entryAt: $('#panelEntryDate').value }),
         });
+        keepUnsavedNoteFields();
         render();
       } catch (err) {
         showToast(err.message || 'Could not save');
@@ -2546,6 +2561,7 @@ async function openApplicationPanel(card) {
           method: 'POST',
           body: JSON.stringify({ company, role, deleteId: button.dataset.timelineRemove }),
         });
+        keepUnsavedNoteFields();
         render();
       });
     });
