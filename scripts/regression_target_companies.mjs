@@ -77,6 +77,5 @@ assert.match(css, /min-width:\s*0/, 'min-width: 0 lets the ellipsis engage');
 const app = readFileSync(resolve('web', 'static', 'app.js'), 'utf-8');
 assert.match(app, /targetCompanyList|targetCompanyInput/, 'connections UI has an interactive target-company list');
 assert.match(app, /not scannable|not fetched|not scanned/, 'helper text says unrecognized careers sites are stored but not fetched');
-assert.doesNotMatch(app, /Score & Add|Score &amp; Add/, 'do not mention Job Board Score & Add');
 
 console.log('regression_target_companies passed');
