@@ -51,3 +51,29 @@ const runStamp = new Date().toISOString().replace(/[:.]/g, '-');
 const VERIFIED_SCAN_LIMIT = Math.max(1, Number(envValue('SUITOR_VERIFIED_SCAN_LIMIT', 'SUITOR_VERIFIED_SCAN_LIMIT', 50)));
 const SCAN_STATE_PATH = resolve(RUNTIME_ROOT, 'scan-state.json');
 const SCAN_HISTORY_PATH = resolve(RUNTIME_ROOT, 'scan-history.tsv');
+
+function resolveCodexBin() {
+  const configured = process.env.SUITOR_CODEX_BIN || process.env.CODEX_BIN || '';
+  const candidates = [
+    configured,
+    resolve(process.env.LOCALAPPDATA || '', 'OpenAI', 'Codex', 'bin', 'codex.exe'),
+    ...(String(process.env.Path || process.env.PATH || '')
+      .split(';')
+      .filter(Boolean)
+      .flatMap(dir => [
+        resolve(dir, 'codex.exe'),
+        resolve(dir, 'codex.cmd'),
+        resolve(dir, 'codex.bat'),
+      ])),
+  ].filter(Boolean);
+  return candidates.find(candidate => existsSync(candidate)) || 'codex';
+}
+
+if (!existsSync(RUNTIME_ROOT) && existsSync(LEGACY_RUNTIME_ROOT)) {
+  try {
+    cpSync(LEGACY_RUNTIME_ROOT, RUNTIME_ROOT, { recursive: true, force: false });
+  } catch (err) {
+    console.warn(`Suitor verified scan runtime migration warning: ${err.message}`);
+  }
+}
+mkdirSync(RUNTIME_ROOT, { recursive: true });
