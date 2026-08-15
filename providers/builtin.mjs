@@ -4,6 +4,7 @@
 import { decodeHtmlEntities, htmlToPlainText } from './_html_text.mjs';
 
 const stripTags = htmlToPlainText;
+const htmlDecode = decodeHtmlEntities;
 
 function absoluteBuiltInUrl(url) {
   if (!url) return '';

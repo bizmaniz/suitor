@@ -63,6 +63,62 @@ for (const required of ['.gitignore', 'README.md', 'SECURITY.md', '.env.example'
   if (!existsSync(required)) failures.push(`${required}: missing required public-repo file`);
 }
 
+function readRel(rel) {
+  return existsSync(rel) ? readFileSync(join(ROOT, rel), 'utf-8') : '';
+}
+
+function themeBlock(css, selector) {
+  const start = css.indexOf(selector);
+  if (start < 0) return '';
+  const open = css.indexOf('{', start);
+  const close = css.indexOf('}', open);
+  if (open < 0 || close < 0) return '';
+  return css.slice(open, close + 1);
+}
+
+const appJs = readRel('web/static/app.js');
+if (appJs.includes(`<Assistan${'td'}>`)) {
+  failures.push('web/static/app.js: table markup still has a scrub artifact instead of <thead>');
+}
+
+const latex = readRel('generate-latex.mjs');
+if (latex.includes(`resumeProjec${'Assistantding'}`)) {
+  failures.push('generate-latex.mjs: LaTeX validator still has a scrub artifact instead of resumeProjectHeading');
+}
+
+const builtin = readRel('providers/builtin.mjs');
+if (/\bhtmlDecode\s*\(/.test(builtin) && !/const htmlDecode\s*=/.test(builtin)) {
+  failures.push('providers/builtin.mjs: htmlDecode is used but never defined (alias decodeHtmlEntities)');
+}
+
+const unlockHtml = readRel('web/static/index.html');
+if (unlockHtml.includes(`home-${'LAN'}`)) {
+  failures.push('web/static/index.html: unlock dialog still mentions a home-LAN password');
+}
+if (unlockHtml.includes('id="loginDialog"') && !unlockHtml.includes('local.app-token')) {
+  failures.push('web/static/index.html: unlock dialog should point at the local.app-token file');
+}
+
+const css = readRel('web/static/styles.css');
+const aliasNames = ['--surface', '--border', '--text', '--panel-strong', '--accent-border'];
+for (const selector of [':root', 'body.dark']) {
+  const block = themeBlock(css, selector);
+  for (const name of aliasNames) {
+    if (!block.includes(`${name}:`)) {
+      failures.push(`web/static/styles.css: ${selector} is missing theme alias ${name}`);
+    }
+  }
+}
+
+const scanState = readRel('scripts/regression_scan_state.mjs');
+const guardrails = readRel('scripts/regression_profile_guardrails.mjs');
+if (!scanState.includes('SUITOR_CONFIG_DIR')) {
+  failures.push('scripts/regression_scan_state.mjs: must set SUITOR_CONFIG_DIR so the live ~/.suitor config is not overwritten');
+}
+if (!guardrails.includes('SUITOR_CONFIG_DIR')) {
+  failures.push('scripts/regression_profile_guardrails.mjs: must set SUITOR_CONFIG_DIR so the live ~/.suitor config is not overwritten');
+}
+
 if (failures.length) {
   console.error('check:clean failed');
   for (const item of failures.slice(0, 80)) console.error(`- ${item}`);

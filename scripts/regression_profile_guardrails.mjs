@@ -14,6 +14,7 @@ function runNode(args, extraEnv = {}) {
     cwd: resolve('.'),
     env: {
       ...process.env,
+      SUITOR_CONFIG_DIR: resolve(profileRoot, '.suitor-config'),
       SUITOR_PERSON_KEY: 'Test Candidate',
       SUITOR_PROFILE_ROOT: profileRoot,
       SUITOR_PORT: '19999',

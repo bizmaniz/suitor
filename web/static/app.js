@@ -708,7 +708,7 @@ function renderTableBlock(rows) {
   const split = (row) => row.replace(/^\||\|$/g, '').split('|').map(cell => cell.trim());
   const header = split(rows[0]);
   const body = rows.slice(2).map(split);
-  return `<div class="table-wrap"><table><Assistantd><tr>${header.map(cell => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></Assistantd><tbody>${body.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
+  return `<div class="table-wrap"><table><thead><tr>${header.map(cell => `<th>${escapeHtml(cell)}</th>`).join('')}</tr></thead><tbody>${body.map(row => `<tr>${row.map(cell => `<td>${escapeHtml(cell)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`;
 }
 
 function renderDiffBlock(body) {
@@ -2624,7 +2624,7 @@ els.loginForm.addEventListener('submit', async (event) => {
     body: JSON.stringify({ token }),
   });
   if (!res.ok) {
-    els.loginError.textContent = 'Password did not match.';
+    els.loginError.textContent = 'Token did not match.';
     return;
   }
   state.authenticated = true;
