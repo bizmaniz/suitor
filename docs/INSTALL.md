@@ -5,7 +5,7 @@
 - Node.js 22.5 or newer
 - Python 3
 - Git
-- OpenAI Codex CLI or Anthropic Claude Code CLI
+- OpenAI Codex CLI, Anthropic Claude Code CLI, or a [Cursor API key](https://cursor.com/dashboard/integrations)
 
 Suitor uses Python for PDF and DOCX text extraction and for application package generation. PDF extraction requires `pypdf`; DOCX extraction requires `python-docx`, which provides the `docx` module.
 
@@ -146,6 +146,15 @@ Claude Code:
 ```bash
 claude --version
 claude login
+```
+
+Cursor (local SDK, not the desktop `cursor` CLI):
+
+```bash
+# From https://cursor.com/dashboard/integrations
+export CURSOR_API_KEY=...
+# or paste the key in the setup wizard. Stored in <runtime>/provider-secrets.json
+# (mode 0600), never in suitor.config.json. Node 22.13+ is required for @cursor/sdk.
 ```
 
 Suitor never asks for API keys. It launches the local CLI after you authenticate that CLI yourself.

@@ -9,6 +9,7 @@ import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
+import { streamCursorPrompt } from './cursor_agent.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
 
@@ -183,9 +184,68 @@ const AUTH_FAILURE_LIMIT = Number(process.env.SUITOR_AUTH_FAILURE_LIMIT || 5);
 const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS || 5 * 60 * 1000);
 const authFailures = new Map();
 
+// Provider API keys live in their own 0600 file under the runtime root, next
+// to the app token - never in suitor.config.json, which people copy around
+// when debugging.
+const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
+let providerSecretsUnreadable = '';
+
+function providerSecrets() {
+  let raw;
+  try {
+    raw = readFileSync(PROVIDER_SECRETS_PATH, 'utf-8');
+  } catch (err) {
+    providerSecretsUnreadable = err.code === 'ENOENT' ? '' : `${err.code || 'read error'}: ${err.message}`;
+    if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+    providerSecretsUnreadable = '';
+    return parsed;
+  } catch (err) {
+    providerSecretsUnreadable = `corrupt file: ${err.message}`;
+    console.error(`Suitor: cannot parse ${PROVIDER_SECRETS_PATH} - ${err.message}`);
+    return {};
+  }
+}
+
+function saveProviderSecrets(next) {
+  providerSecrets();
+  if (providerSecretsUnreadable) {
+    const err = new Error(`Refusing to overwrite ${PROVIDER_SECRETS_PATH} (${providerSecretsUnreadable}). Move or repair the file, then save again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  mkdirSync(DATA_ROOT, { recursive: true });
+  writeTextAtomic(PROVIDER_SECRETS_PATH, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+}
+
+function cursorApiKey() {
+  const stored = providerSecrets().cursor || {};
+  return String(process.env.CURSOR_API_KEY || stored.apiKey || '').trim();
+}
+
+function cursorFromEnvironment() {
+  return Boolean(String(process.env.CURSOR_API_KEY || '').trim());
+}
+
+function cursorConfigured() {
+  return Boolean(cursorApiKey());
+}
+
+function cursorKeyHint() {
+  const key = cursorApiKey();
+  return key ? `${key.slice(0, 4)}…` : '';
+}
+
 function localClaudeEnv() {
+  const cursorKey = cursorApiKey();
   return {
     ...process.env,
+    ...(cursorKey ? { CURSOR_API_KEY: cursorKey } : {}),
+    SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
     SUITOR_RUNTIME_ROOT: DATA_ROOT,
@@ -4119,9 +4179,51 @@ async function handleApi(req, res, pathname) {
       node: { version: process.version, ok: Number(process.versions.node.split('.')[0]) >= 22 },
       codex: detectCli('codex'),
       claude: detectCli('claude'),
+      cursor: {
+        configured: cursorConfigured(),
+        fromEnvironment: cursorFromEnvironment(),
+        hint: cursorKeyHint(),
+      },
       configPath: config.configPath,
       profileRoot: PROFILE_ROOT,
       runtimeRoot: DATA_ROOT,
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    if (body.apiKey !== undefined && (typeof body.apiKey !== 'string' || body.apiKey.length > 400)) {
+      return send(res, 400, { error: 'apiKey must be a string of at most 400 characters.' });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.cursor || {};
+    const apiKey = String(body.apiKey || '').trim() || String(current.apiKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.cursor;
+    } else if (apiKey) {
+      secrets.cursor = { apiKey };
+    } else {
+      delete secrets.cursor;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
     });
   }
 
@@ -4847,6 +4949,9 @@ async function handleApi(req, res, pathname) {
     if (!message) return send(res, 400, { error: 'Message is required' });
     if (isVerifiedScanRequest(message)) return streamVerifiedScanChat(message, res);
     const prompt = buildAgentPrompt({ message, view: body.view, attachments: body.attachments });
+    if (config.llm?.provider === 'cursor') {
+      return streamCursor(prompt, res, { displayUserMessage: message, model: body.model });
+    }
     if ((config.llm?.provider || 'openai') === 'anthropic') {
       return streamClaude(prompt, res, { displayUserMessage: message });
     }
@@ -4917,6 +5022,38 @@ function streamHeaders(res) {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Accel-Buffering': 'no',
+  });
+}
+
+function streamCursor(message, res, options = {}) {
+  streamHeaders(res);
+  appendChatLog({ role: 'user', at: new Date().toISOString(), message: options.displayUserMessage || message });
+  setImmediate(async () => {
+    let assistantText = '';
+    try {
+      assistantText = await streamCursorPrompt({
+        prompt: message,
+        cwd: PROFILE_ROOT,
+        model: options.model || config.llm?.model,
+        apiKey: cursorApiKey(),
+        onText: chunk => res.write(chunk),
+      });
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: assistantText });
+      if (options.localEdit) {
+        const event = `\n\n[app-action] ${JSON.stringify(options.localEdit)}\n`;
+        assistantText += event;
+        res.write(event);
+      }
+      res.write('\n\n[process exited with code 0]\n');
+      res.end();
+    } catch (err) {
+      const text = `The Cursor assistant could not answer. ${err.message}\n`;
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message: assistantText || text });
+      if (!res.writableEnded) {
+        res.write(`${text}\n[process exited with code 1]\n`);
+        res.end();
+      }
+    }
   });
 }
 
@@ -5105,6 +5242,10 @@ function streamTailorPackage(payload, res) {
   streamHeaders(res);
   setImmediate(() => {
     const stamp = Date.now();
+    if ((config.llm?.provider || 'openai') === 'cursor') {
+      // Cursor is selected for chat and scoring; this endpoint still writes
+      // files through the existing local package generator.
+    }
     const inputPath = packageInputPath('tailor', stamp);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
     appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });

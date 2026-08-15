@@ -20,10 +20,12 @@ Config file: `suitor.config.json` in `SUITOR_CONFIG_DIR` or `~/.suitor`.
 | Config field | Env var | Notes |
 |---|---|---|
 | `assistantName` | `SUITOR_ASSISTANT_NAME` | 1 to 40 characters in the wizard |
-| `llm.provider` | `SUITOR_LLM_PROVIDER` | `openai` or `anthropic` |
+| `llm.provider` | `SUITOR_LLM_PROVIDER` | `openai`, `anthropic`, or `cursor` |
 | `llm.codexBin` | `SUITOR_CODEX_BIN` | Optional explicit Codex path |
 | `llm.claudeBin` | `SUITOR_CLAUDE_BIN` | Optional explicit Claude path |
 | `llm.permissionMode` | `SUITOR_CLAUDE_PERMISSION_MODE` | Defaults to conservative CLI behavior |
+| — | `CURSOR_API_KEY` | Cursor user API key; overrides `<runtime>/provider-secrets.json`. Never stored in `suitor.config.json`. |
+| — | `SUITOR_CURSOR_MODEL` | Cursor model id, default `composer-2.5` |
 
 ## Candidate Summary
 
