@@ -2622,7 +2622,7 @@ els.loginForm.addEventListener('submit', async (event) => {
     body: JSON.stringify({ token }),
   });
   if (!res.ok) {
-    els.loginError.textContent = 'Password did not match.';
+    els.loginError.textContent = 'Token did not match.';
     return;
   }
   state.authenticated = true;
