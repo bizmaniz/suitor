@@ -6,6 +6,8 @@ import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
 import { assertSafeFetchUrl, strictUrlFetchEnabled } from '../providers/_url_safety.mjs';
+import { completeCursorPrompt } from '../web/cursor_agent.mjs';
+import { runSelectedScoring } from '../web/llm_routing.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function envValue(name, legacyName, fallback = '') {
@@ -661,8 +663,7 @@ function extractJson(text) {
   return JSON.parse(raw);
 }
 
-function runCodexScoring(fetched) {
-  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+function scoringPrompt(fetched) {
   const scorable = fetched.map(item => ({
     title: item.title,
     company: item.company,
@@ -725,6 +726,12 @@ Return exactly this JSON shape:
   "notes": ""
 }
 `;
+  return prompt;
+}
+
+function runCodexScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const prompt = scoringPrompt(fetched);
   const outFile = resolve(RUNTIME_ROOT, `verified-scan-${Date.now()}.json`);
   const result = spawnSync(resolveCodexBin(), [
     'exec',
@@ -748,6 +755,16 @@ Return exactly this JSON shape:
   try {
     if (existsSync(outFile)) rmSync(outFile, { force: true });
   } catch {}
+  return extractJson(output);
+}
+
+async function runCursorScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const output = await completeCursorPrompt({
+    prompt: scoringPrompt(fetched),
+    cwd: PROFILE_ROOT,
+    apiKey: process.env.CURSOR_API_KEY || '',
+  });
   return extractJson(output);
 }
 
@@ -883,7 +900,13 @@ async function main() {
   let result;
   try {
     console.log(`Scoring ${fetched.length} verified candidates against ${CANDIDATE_FIRST}'s locked profile...`);
-    result = runCodexScoring(fetched);
+    result = await runSelectedScoring({
+      provider: String(process.env.SUITOR_LLM_PROVIDER || '').trim().toLowerCase(),
+      fetched,
+      runCursor: runCursorScoring,
+      runCodex: runCodexScoring,
+      fallback: fallbackScoring,
+    });
   } catch (err) {
     console.log(`Scoring fell back to Needs Verification because local model scoring failed: ${err.message}`);
     result = fallbackScoring(fetched, err.message);

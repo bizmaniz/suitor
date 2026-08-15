@@ -2204,6 +2204,7 @@ async function showOnboardingWizard(force = false) {
           <span class="${env.node.ok ? 'ok' : 'bad'}">Node ${escapeHtml(env.node.version)} ${env.node.ok ? 'ready' : 'needs 22+'}</span>
           <span class="${env.codex.installed ? 'ok' : 'warn'}">Codex CLI ${env.codex.installed ? 'found' : 'not found'}</span>
           <span class="${env.claude.installed ? 'ok' : 'warn'}">Claude CLI ${env.claude.installed ? 'found' : 'not found'}</span>
+          <span class="${env.cursor?.configured ? 'ok' : 'warn'}">Cursor ${env.cursor?.configured ? 'API key set' : 'no API key'}</span>
         </div>
       </section>
       <section class="wizard-section">
@@ -2211,8 +2212,10 @@ async function showOnboardingWizard(force = false) {
         <div class="segmented">
           <label><input type="radio" name="provider" value="openai" ${provider === 'openai' ? 'checked' : ''}> ChatGPT via Codex</label>
           <label><input type="radio" name="provider" value="anthropic" ${provider === 'anthropic' ? 'checked' : ''}> Claude via Claude Code</label>
+          <label><input type="radio" name="provider" value="cursor" ${provider === 'cursor' ? 'checked' : ''}> Cursor</label>
         </div>
         <input name="assistantName" maxlength="40" required placeholder="Assistant name" value="${escapeHtml(cfg.assistantName || state.meta.assistantName)}">
+        <input name="cursorApiKey" type="password" autocomplete="off" spellcheck="false" placeholder="Cursor API key (optional now; required to use Cursor)">
       </section>
       <section class="wizard-section intake-chat">
         <h3>Recruiter interview</h3>
@@ -2300,6 +2303,10 @@ async function showOnboardingWizard(force = false) {
       onboarded: true,
     };
     const saved = await api('/api/onboarding', { method: 'POST', body: JSON.stringify(next) });
+    const cursorApiKey = String(form.get('cursorApiKey') || '').trim();
+    if (cursorApiKey) {
+      await api('/api/cursor', { method: 'POST', body: JSON.stringify({ apiKey: cursorApiKey }) });
+    }
     state.onboarding = saved.status;
     overlay.hidden = true;
     showToast('Profile saved');
