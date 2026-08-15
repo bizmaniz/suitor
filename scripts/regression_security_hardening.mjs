@@ -81,7 +81,7 @@ function assertAgentSandboxSource() {
   assert.match(source, /SUITOR_PROFILE_ROOT: PROFILE_ROOT/);
   assert.match(source, /SUITOR_RUNTIME_ROOT: DATA_ROOT/);
   assert.match(source, /SUITOR_PORTALS_PATH: resolve\(PROFILE_ROOT, 'portals\.yml'\)/);
-  assert.match(source, /function streamProcess\(command, args, res\)[\s\S]*env: localClaudeEnv\(\)/);
+  assert.match(source, /function streamProcess\(command, args, res, env = localClaudeEnv\(\)\)[\s\S]*shell: false, env,/);
   assert.match(source, /function safeSpawnPath\(pathValue, root, label\)/);
   assert.match(source, /spawn\(pythonBin, \['--', packageScriptPath\('generate_tailored_package\.py'\), inputPath\]/);
   assert.match(source, /spawn\(pythonBin, \['--', packageScriptPath\('generate_profile_package\.py'\), inputPath\]/);

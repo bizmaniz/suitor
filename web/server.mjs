@@ -7,10 +7,37 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, wri
 import { networkInterfaces } from 'os';
 import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
-import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
+import { deleteJdJob, identityKeyFor, listJdJobs, openJobDb, persistJdJob } from './job_db.mjs';
+import { streamCursorPrompt } from './cursor_agent.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import {
+  loadProviderSecrets,
+  saveProviderSecretsFile,
+  restrictPrivateFile,
+  cursorApiKeyFrom,
+  childEnvForCli,
+  childEnvForCursorScan,
+  nodeVersionAtLeast,
+} from './provider_secrets.mjs';
+import { collectCursorContext, formatCursorContextMarkdown } from './cursor_context.mjs';
+import { splitQueries, MAX_SEARCH_LANES } from '../scripts/linkedin_lanes.mjs';
+import {
+  classifyBoardUrl,
+  generatedTargetCompanyEntries,
+  linkedInFallbackCompanies,
+  targetCompanyList,
+  targetCompanyNames,
+} from './target_companies.mjs';
+import {
+  addTimelineEntry,
+  applicationNoteCounts,
+  deleteTimelineEntry,
+  ensureApplicationNotesSchema,
+  readApplicationNotes,
+  upsertApplicationNotes,
+} from './application_notes.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -183,9 +210,88 @@ const AUTH_FAILURE_LIMIT = Number(process.env.SUITOR_AUTH_FAILURE_LIMIT || 5);
 const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS || 5 * 60 * 1000);
 const authFailures = new Map();
 
-function localClaudeEnv() {
+// Provider API keys live in their own 0600 file under the runtime root, next
+// to the app token - never in suitor.config.json, which people copy around
+// when debugging.
+const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
+let providerSecretsUnreadable = '';
+
+function providerSecrets() {
+  const loaded = loadProviderSecrets(PROVIDER_SECRETS_PATH);
+  providerSecretsUnreadable = loaded.error || '';
+  if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+  return loaded.secrets;
+}
+
+function saveProviderSecrets(next) {
+  providerSecrets();
+  if (providerSecretsUnreadable) {
+    const err = new Error(`Refusing to overwrite ${PROVIDER_SECRETS_PATH} (${providerSecretsUnreadable}). Move or repair the file, then save again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  mkdirSync(DATA_ROOT, { recursive: true });
+  saveProviderSecretsFile(PROVIDER_SECRETS_PATH, next);
+  restrictPrivateFile(PROVIDER_SECRETS_PATH);
+}
+
+function cursorApiKey() {
+  return cursorApiKeyFrom(process.env, providerSecrets());
+}
+
+function cursorFromEnvironment() {
+  return Boolean(String(process.env.CURSOR_API_KEY || '').trim());
+}
+
+function cursorConfigured() {
+  return Boolean(cursorApiKey());
+}
+
+function cursorKeyHint() {
+  const key = cursorApiKey();
+  return key ? `${key.slice(0, 4)}…` : '';
+}
+
+const MAX_PROVIDER_SECRET_LENGTH = 200;
+
+function adzunaKeys() {
+  const stored = providerSecrets().adzuna || {};
   return {
-    ...process.env,
+    appId: String(process.env.ADZUNA_APP_ID || stored.appId || '').trim(),
+    appKey: String(process.env.ADZUNA_APP_KEY || stored.appKey || '').trim(),
+  };
+}
+
+function adzunaFromEnvironment() {
+  return Boolean(String(process.env.ADZUNA_APP_ID || '').trim() || String(process.env.ADZUNA_APP_KEY || '').trim());
+}
+
+function adzunaConfigured() {
+  const { appId, appKey } = adzunaKeys();
+  return Boolean(appId && appKey);
+}
+
+function adzunaSearchSettings(current = config) {
+  const stored = current.connections?.adzunaSearch || {};
+  return {
+    what: String(stored.what || '').slice(0, 200),
+    where: String(stored.where || 'Remote').slice(0, 120),
+    country: (String(stored.country || 'us').toLowerCase().match(/^[a-z]{2}$/) || ['us'])[0],
+  };
+}
+
+function childEnvForAdzunaScan(baseEnv = localClaudeEnv()) {
+  const env = { ...baseEnv };
+  const { appId, appKey } = adzunaKeys();
+  if (appId) env.ADZUNA_APP_ID = appId;
+  if (appKey) env.ADZUNA_APP_KEY = appKey;
+  return env;
+}
+
+function localClaudeEnv() {
+  const env = {
+    ...childEnvForCli(process.env, { provider: String(config.llm?.provider || '') }),
+    SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
     SUITOR_RUNTIME_ROOT: DATA_ROOT,
@@ -201,6 +307,9 @@ function localClaudeEnv() {
     OTEL_SDK_DISABLED: 'true',
     DO_NOT_TRACK: '1',
   };
+  delete env.ADZUNA_APP_ID;
+  delete env.ADZUNA_APP_KEY;
+  return env;
 }
 
 let pythonBinCache;
@@ -763,160 +872,9 @@ let jobDbSyncing = false;
 
 function jobDb() {
   if (jobDbHandle) return jobDbHandle;
-  mkdirSync(DATA_ROOT, { recursive: true });
-  const db = new DatabaseSync(JOB_DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
-  ensureJobDbSchema(db);
-  jobDbHandle = db;
+  jobDbHandle = openJobDb(JOB_DB_PATH);
+  ensureApplicationNotesSchema(jobDbHandle);
   return jobDbHandle;
-}
-
-function ensureJobDbSchema(db) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS jobs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      compensation TEXT NOT NULL DEFAULT '',
-      score REAL,
-      score_breakdown TEXT NOT NULL DEFAULT '',
-      jd_text TEXT NOT NULL DEFAULT '',
-      first_seen_at TEXT NOT NULL DEFAULT '',
-      last_seen_at TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      UNIQUE(normalized_company, normalized_role, normalized_url)
-    );
-
-    CREATE TABLE IF NOT EXISTS applications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      job_id INTEGER,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT '',
-      section TEXT NOT NULL DEFAULT '',
-      date_found TEXT NOT NULL DEFAULT '',
-      date_submitted TEXT NOT NULL DEFAULT '',
-      date_rejected TEXT NOT NULL DEFAULT '',
-      follow_up_date TEXT NOT NULL DEFAULT '',
-      score REAL,
-      score_text TEXT NOT NULL DEFAULT '',
-      compensation TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      materials_path TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      next_action TEXT NOT NULL DEFAULT '',
-      score_breakdown TEXT NOT NULL DEFAULT '',
-      score_date TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      UNIQUE(normalized_company, normalized_role)
-    );
-
-    CREATE TABLE IF NOT EXISTS scan_decisions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key TEXT NOT NULL UNIQUE,
-      aliases_json TEXT NOT NULL DEFAULT '[]',
-      decision TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      report_file TEXT NOT NULL DEFAULT '',
-      reason TEXT NOT NULL DEFAULT '',
-      score REAL,
-      comp TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      decided_at TEXT NOT NULL DEFAULT '',
-      decided_by TEXT NOT NULL DEFAULT '',
-      synthetic INTEGER NOT NULL DEFAULT 0,
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS application_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      event_type TEXT NOT NULL DEFAULT '',
-      event_at TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      payload_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS interviews (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      round_type TEXT NOT NULL DEFAULT '',
-      interview_at TEXT NOT NULL DEFAULT '',
-      interviewers TEXT NOT NULL DEFAULT '',
-      prep_notes TEXT NOT NULL DEFAULT '',
-      outcome TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS contacts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      name TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      company TEXT NOT NULL DEFAULT '',
-      email TEXT NOT NULL DEFAULT '',
-      phone TEXT NOT NULL DEFAULT '',
-      linkedin_url TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS captures (
-      id TEXT PRIMARY KEY,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      jd_text TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      deleted_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
-    CREATE INDEX IF NOT EXISTS idx_applications_identity ON applications(normalized_company, normalized_role);
-    CREATE INDEX IF NOT EXISTS idx_scan_decisions_decision ON scan_decisions(decision);
-    CREATE INDEX IF NOT EXISTS idx_scan_decisions_identity ON scan_decisions(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_application_events_application ON application_events(application_id, event_at);
-    CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id, interview_at);
-    CREATE INDEX IF NOT EXISTS idx_contacts_application ON contacts(application_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_captures_identity ON captures(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_captures_active ON captures(deleted_at, updated_at);
-  `);
-  try { db.prepare('ALTER TABLE interviews ADD COLUMN company TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  try { db.prepare('ALTER TABLE interviews ADD COLUMN role TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', '3');
 }
 
 function dbText(value = '') {
@@ -1082,26 +1040,8 @@ function interviewCalendarIcs() {
   return lines.join('\r\n') + '\r\n';
 }
 
-function targetCompanySlug(value = '') {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, '')
-    .trim();
-}
-
-function generatedTargetCompanyEntries(companies = []) {
-  const entries = [];
-  for (const company of companies.map(value => String(value || '').trim()).filter(Boolean)) {
-    const slug = targetCompanySlug(company);
-    if (!slug) continue;
-    entries.push(
-      { name: `${company} (Greenhouse)`, provider: 'greenhouse', careersUrl: `https://job-boards.greenhouse.io/${slug}` },
-      { name: `${company} (Lever)`, provider: 'lever', careersUrl: `https://jobs.lever.co/${slug}` },
-      { name: `${company} (Ashby)`, provider: 'ashby', careersUrl: `https://jobs.ashbyhq.com/${slug}` },
-    );
-  }
-  return entries;
+function currentTargetCompanies(current = config) {
+  return targetCompanyList(current.connections?.targetCompanies || []);
 }
 
 const INTAKE_STAGES = [
@@ -1498,7 +1438,9 @@ function writeOnboardingArtifacts(current = config) {
     name: `Custom RSS ${index + 1}`,
     url: String(url || '').trim(),
   })).filter(feed => feed.url);
-  const targetEntries = generatedTargetCompanyEntries(current.connections?.targetCompanies || []);
+  const targetEntries = generatedTargetCompanyEntries(currentTargetCompanies(current));
+  const adzunaSearch = adzunaSearchSettings(current);
+  const adzunaEntries = current.connections?.providers?.adzuna && adzunaConfigured() ? [adzunaSearch] : [];
   writeTextAtomic(portalsPath, [
     '# Suitor generated provider configuration',
     'providers:',
@@ -1510,6 +1452,15 @@ function writeOnboardingArtifacts(current = config) {
       `    careers_url: ${JSON.stringify(entry.careersUrl)}`,
       '    enabled: true',
     ]),
+    ...adzunaEntries.flatMap(entry => [
+      `  - name: ${JSON.stringify('Adzuna Market')}`,
+      '    scan_method: adzuna',
+      `    adzuna_what: ${JSON.stringify(entry.what)}`,
+      `    adzuna_where: ${JSON.stringify(entry.where)}`,
+      `    adzuna_country: ${JSON.stringify(entry.country)}`,
+      '    adzuna_results_per_page: 50',
+      '    enabled: true',
+    ]),
     'rss_feeds:',
     ...rssFeeds.flatMap(feed => [
       `  - name: ${JSON.stringify(feed.name)}`,
@@ -1517,7 +1468,7 @@ function writeOnboardingArtifacts(current = config) {
       '    enabled: true',
     ]),
     'target_companies:',
-    ...(current.connections?.targetCompanies || []).map(name => `  - ${JSON.stringify(name)}`),
+    ...targetCompanyNames(current.connections?.targetCompanies || []).map(name => `  - ${JSON.stringify(name)}`),
     'company_exclusions:',
     ...splitIntakeList(profile.dealbreakers.summary).map(name => `  - ${JSON.stringify(name)}`),
     'exclude_keywords:',
@@ -1526,16 +1477,6 @@ function writeOnboardingArtifacts(current = config) {
   if (!existsSync(TRACKER_PATH)) {
     writeTextAtomic(TRACKER_PATH, '# Applications Tracker\n\n');
   }
-}
-
-function mergeConnectionBlock(current = {}, incoming = {}) {
-  const next = { ...current, ...incoming };
-  for (const key of ['linkedin', 'providers', 'email']) {
-    if (incoming[key] && typeof incoming[key] === 'object' && !Array.isArray(incoming[key])) {
-      next[key] = { ...(current[key] || {}), ...incoming[key] };
-    }
-  }
-  return next;
 }
 
 function connectionStatus() {
@@ -1554,17 +1495,22 @@ function connectionStatus() {
       enabled: Boolean(config.connections?.linkedin?.enabled),
       status: existsSync(BROWSER_PROFILE_DIR) ? 'connected' : 'not_set_up',
       dataStored: 'Local Playwright browser profile only; no credentials are stored by Suitor.',
+      searchQuery: String(config.connections?.linkedin?.searchQuery || ''),
     },
     providers: Object.entries(providers).map(([name, enabled]) => ({ name, enabled: Boolean(enabled) })),
     adzuna: {
       enabled: Boolean(providers.adzuna),
-      status: process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY ? 'connected' : 'not_set_up',
+      status: adzunaConfigured() ? 'connected' : 'not_set_up',
+      fromEnvironment: adzunaFromEnvironment(),
+      search: adzunaSearchSettings(),
     },
     customRss: { count: (config.connections?.rssFeeds || []).length },
     targetCompanies: {
-      count: (config.connections?.targetCompanies || []).length,
-      generatedBoards: generatedTargetCompanyEntries(config.connections?.targetCompanies || []),
+      count: currentTargetCompanies().length,
+      withBoards: currentTargetCompanies().filter(item => item.boards.length).length,
+      generatedBoards: generatedTargetCompanyEntries(currentTargetCompanies()),
     },
+    linkedinSearchQuery: String(config.connections?.linkedin?.searchQuery || ''),
     email: {
       enabled: Boolean(config.connections?.email?.enabled),
       status: existsSync(EMAIL_IMPORT_LOG) ? 'local_imports' : 'not_set_up',
@@ -1577,6 +1523,11 @@ function connectionStatus() {
 function dbNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function dbScore(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return dbNumber(value);
 }
 
 function dbIdentity(value = '') {
@@ -1820,11 +1771,13 @@ function importEmailUpdate(payload = {}) {
   return { parsed, trackerResult: null };
 }
 
-function dbApplicationToCard(row = {}) {
+function dbApplicationToCard(row = {}, noteTally = { notes: 0, timeline: 0 }) {
   const known = knownRoleMeta(row.company || '', row.role || '');
   const dateText = row.date_submitted || row.date_rejected || row.date_found || row.score_date || '';
   return {
     title: row.role ? `${row.company} - ${row.role}` : row.company,
+    company: row.company || '',
+    role: row.role || '',
     section: row.section || applicationSectionForStatus(row.status),
     fields: {
       Status: row.status || row.section || '',
@@ -1838,6 +1791,8 @@ function dbApplicationToCard(row = {}) {
     score: dbNumber(row.score),
     scoreBreakdown: row.score_breakdown || row.notes || '',
     scoreDate: row.score_date || dateText,
+    noteCount: Number(noteTally.notes || 0),
+    timelineCount: Number(noteTally.timeline || 0),
   };
 }
 
@@ -1857,7 +1812,9 @@ function dbTrackerCards() {
       company COLLATE NOCASE,
       role COLLATE NOCASE
   `).all();
-  return rows.map(dbApplicationToCard);
+  let counts = new Map();
+  try { counts = applicationNoteCounts(jobDb()); } catch {}
+  return rows.map(row => dbApplicationToCard(row, counts.get(identityKeyFor(row.company, row.role)) || { notes: 0, timeline: 0 }));
 }
 
 function importTrackerIntoDb(db = jobDb()) {
@@ -3585,6 +3542,11 @@ ${recentHistory}
 
 Attached/uploaded files:
 ${attachmentLines}
+${String(config.llm?.provider || '').toLowerCase() === 'cursor' ? `\n${formatCursorContextMarkdown(collectCursorContext({
+    profilePaths: [docs.profile],
+    trackerPath: TRACKER_PATH,
+    attachments,
+  }))}` : ''}
 
 User request:
 ${message}`;
@@ -4061,6 +4023,211 @@ function streamSimpleAssistant(userMessage, assistantMessage, res) {
   res.end();
 }
 
+
+const BOARD_ROW_LIMIT = 3000;
+
+function loadBoardRows(db) {
+  const rows = db.prepare(`
+    SELECT company, role, title, url, source, location, compensation, score,
+           score_breakdown, report_file, recommended_action, apply_type,
+           verification, first_seen_at, last_seen_at, scored_at
+    FROM jobs
+    ORDER BY (score IS NULL), score DESC, scored_at DESC
+    LIMIT ?
+  `).all(BOARD_ROW_LIMIT);
+  const totalRows = Number(db.prepare('SELECT COUNT(*) AS total FROM jobs').get()?.total || 0);
+  const byRole = new Map();
+  for (const row of rows) {
+    const identity = identityKeyFor(row.company, row.role);
+    const key = identity === '::' ? (dbUrlIdentity(row.url) || `row-${row.url}`) : identity;
+    const existing = byRole.get(key);
+    if (!existing) { byRole.set(key, { ...row, timesSeen: 1 }); continue; }
+    existing.timesSeen += 1;
+    const best = existing.score == null ? -1 : Number(existing.score);
+    const next = row.score == null ? -1 : Number(row.score);
+    if (next > best) byRole.set(key, { ...row, timesSeen: existing.timesSeen });
+  }
+  return { rows: [...byRole.values()], fetchedRows: rows.length, totalRows, rowLimit: BOARD_ROW_LIMIT };
+}
+
+const JD_JOB_CONCURRENCY = 2;
+const jdJobs = new Map();
+const jdJobQueue = [];
+const jdChildren = new Set();
+let jdJobsRunning = 0;
+const JD_SCORING_SCRIPT = resolve(APP_ROOT, 'scripts', 'verified_scan.mjs');
+
+function jdJobSummary(job) {
+  return {
+    identity: job.identity,
+    company: job.company,
+    role: job.role,
+    url: job.url,
+    status: job.status,
+    error: job.error || '',
+    queuedAt: job.queuedAt,
+    startedAt: job.startedAt || '',
+    finishedAt: job.finishedAt || '',
+  };
+}
+
+function saveJdJob(job) {
+  try { persistJdJob(jobDb(), job); } catch (err) {
+    console.error(`Could not persist JD job ${job.identity}: ${err.message || err}`);
+  }
+}
+
+function forgetJdJob(identity) {
+  jdJobs.delete(identity);
+  try { deleteJdJob(jobDb(), identity); } catch {}
+}
+
+function pumpJdJobQueue() {
+  while (jdJobsRunning < JD_JOB_CONCURRENCY && jdJobQueue.length) {
+    const identity = jdJobQueue.shift();
+    const job = jdJobs.get(identity);
+    if (!job || job.status !== 'queued') continue;
+    startJdJob(job);
+  }
+}
+
+function startJdJob(job) {
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  job.error = '';
+  jdJobsRunning += 1;
+  const scriptPath = process.env.SUITOR_JD_SCORING_SCRIPT ? resolve(process.env.SUITOR_JD_SCORING_SCRIPT) : JD_SCORING_SCRIPT;
+  const args = [scriptPath, '--jd-file', job.jdPath];
+  if (job.company) args.push('--company', job.company);
+  if (job.role) args.push('--role', job.role);
+  if (job.url) args.push('--url', job.url.slice(0, 500));
+  let output = '';
+  const appendOutput = chunk => {
+    output = `${output}${chunk.toString()}`.slice(-12000);
+  };
+  const finish = code => {
+    jdJobsRunning -= 1;
+    job.pid = 0;
+    job.child = null;
+    job.finishedAt = new Date().toISOString();
+    if (code === 0) {
+      try { rmSync(job.jdPath, { force: true }); } catch {}
+      forgetJdJob(job.identity);
+    } else {
+      job.status = 'error';
+      job.error = jdJobErrorMessage(output, code);
+      saveJdJob(job);
+    }
+    pumpJdJobQueue();
+  };
+  const scoringEnv = childEnvForCursorScan(localClaudeEnv(), {
+    provider: String(config.llm?.provider || ''),
+    cursorKey: cursorApiKey(),
+  });
+  let child;
+  try {
+    child = spawn(process.execPath, args, { cwd: APP_ROOT, shell: false, env: scoringEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    jdJobsRunning -= 1;
+    job.status = 'error';
+    job.error = `Could not start scoring: ${err.message || err}`;
+    job.finishedAt = new Date().toISOString();
+    job.pid = 0;
+    saveJdJob(job);
+    pumpJdJobQueue();
+    return;
+  }
+  job.pid = child.pid || 0;
+  job.child = child;
+  jdChildren.add(child);
+  saveJdJob(job);
+  child.stdout.on('data', appendOutput);
+  child.stderr.on('data', appendOutput);
+  child.on('error', err => { output += `\n${err.message || err}`; });
+  child.on('close', (code) => {
+    jdChildren.delete(child);
+    finish(code);
+  });
+}
+
+function jdJobErrorMessage(output, code) {
+  const lines = String(output || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const ignore = /^(?:node\.js\s+v?\d|usage:|v\d+\.\d+\.\d+$)/i;
+  const useful = lines.filter(line => !ignore.test(line));
+  const last = (useful.length ? useful : lines).slice(-4).join(' ').slice(0, 400);
+  return last || `Scoring failed (exit code ${code}).`;
+}
+
+function killJdChildren() {
+  for (const child of [...jdChildren]) {
+    try { child.kill('SIGTERM'); } catch {}
+    jdChildren.delete(child);
+  }
+}
+
+function persistLiveJdJobs(runningAs = 'queued') {
+  for (const job of jdJobs.values()) {
+    if (job.status === 'running') {
+      job.status = runningAs;
+      job.startedAt = '';
+      job.pid = 0;
+      job.child = null;
+    }
+    if (job.status === 'queued' || job.status === 'error') saveJdJob(job);
+  }
+}
+
+function shutdownJdQueue() {
+  killJdChildren();
+  persistLiveJdJobs('queued');
+}
+
+function recoverJdQueue() {
+  let rows = [];
+  try { rows = listJdJobs(jobDb()); } catch (err) {
+    console.error(`Could not recover JD queue: ${err.message || err}`);
+    return;
+  }
+  const referenced = new Set();
+  for (const row of rows) {
+    const jdPath = String(row.jd_path || '');
+    if (jdPath) referenced.add(resolve(jdPath));
+    if (row.pid) {
+      try { process.kill(row.pid, 'SIGTERM'); } catch {}
+    }
+    if (!jdPath || !existsSync(jdPath)) {
+      try { deleteJdJob(jobDb(), row.identity); } catch {}
+      continue;
+    }
+    const job = {
+      identity: row.identity,
+      company: row.company || '',
+      role: row.role || '',
+      url: row.url || '',
+      jdPath,
+      status: row.status === 'error' ? 'error' : 'queued',
+      error: row.status === 'error' ? (row.error || '') : '',
+      queuedAt: row.queued_at || new Date().toISOString(),
+      startedAt: '',
+      finishedAt: row.status === 'error' ? (row.finished_at || '') : '',
+      pid: 0,
+    };
+    jdJobs.set(job.identity, job);
+    if (job.status === 'queued') jdJobQueue.push(job.identity);
+    saveJdJob(job);
+  }
+  try {
+    for (const name of readdirSync(DATA_ROOT)) {
+      if (!name.startsWith('pasted-jd-')) continue;
+      const full = resolve(DATA_ROOT, name);
+      if (!referenced.has(full)) {
+        try { rmSync(full, { force: true }); } catch {}
+      }
+    }
+  } catch {}
+  pumpJdJobQueue();
+}
+
 async function handleApi(req, res, pathname) {
   if (!requireSameOriginForMutation(req, res)) return;
 
@@ -4126,12 +4293,54 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/env-check' && req.method === 'GET') {
     return send(res, 200, {
-      node: { version: process.version, ok: Number(process.versions.node.split('.')[0]) >= 22 },
+      node: { version: process.version, ok: nodeVersionAtLeast(process.versions.node, '22.13.0') },
       codex: detectCli('codex'),
       claude: detectCli('claude'),
+      cursor: {
+        configured: cursorConfigured(),
+        fromEnvironment: cursorFromEnvironment(),
+        hint: cursorKeyHint(),
+      },
       configPath: config.configPath,
       profileRoot: PROFILE_ROOT,
       runtimeRoot: DATA_ROOT,
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    if (body.apiKey !== undefined && (typeof body.apiKey !== 'string' || body.apiKey.length > 400)) {
+      return send(res, 400, { error: 'apiKey must be a string of at most 400 characters.' });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.cursor || {};
+    const apiKey = String(body.apiKey || '').trim() || String(current.apiKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.cursor;
+    } else if (apiKey) {
+      secrets.cursor = { apiKey };
+    } else {
+      delete secrets.cursor;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
     });
   }
 
@@ -4186,8 +4395,14 @@ async function handleApi(req, res, pathname) {
       ...body,
       llm: { ...(config.llm || {}), ...(body.llm || {}) },
       intake: { ...(config.intake || {}), ...(body.intake || {}) },
-      connections: mergeConnectionBlock(config.connections || {}, body.connections || {}),
+      connections: { ...(config.connections || {}), ...(body.connections || {}) },
     };
+    if (body.connections?.linkedin && typeof body.connections.linkedin === 'object') {
+      next.connections.linkedin = { ...(config.connections?.linkedin || {}), ...body.connections.linkedin };
+    }
+    if (Array.isArray(next.connections?.targetCompanies)) {
+      next.connections.targetCompanies = targetCompanyList(next.connections.targetCompanies);
+    }
     next.intake.progress = onboardingStatus(next);
     next.onboarded = Boolean(body.onboarded || (next.assistantName && onboardingStatus(next).tier1Complete));
     Object.assign(config, next);
@@ -4211,7 +4426,6 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/connections/linkedin/disconnect' && req.method === 'POST') {
     config.connections ||= {};
-    // Spread, never replace: disconnect must not wipe extra LinkedIn keys.
     config.connections.linkedin = { ...(config.connections.linkedin || {}), enabled: false };
     saveConfig(config);
     if (isUnder(BROWSER_ROOT, DATA_ROOT) && existsSync(BROWSER_ROOT)) {
@@ -4220,6 +4434,177 @@ async function handleApi(req, res, pathname) {
     }
     writeOnboardingArtifacts(config);
     return send(res, 200, { ok: true, connections: connectionStatus() });
+  }
+
+  if (pathname === '/api/adzuna' && req.method === 'GET') {
+    const { appId } = adzunaKeys();
+    return send(res, 200, {
+      ok: true,
+      enabled: Boolean(config.connections?.providers?.adzuna),
+      configured: adzunaConfigured(),
+      fromEnvironment: adzunaFromEnvironment(),
+      appIdHint: appId ? `${appId.slice(0, 4)}…` : '',
+      search: adzunaSearchSettings(),
+    });
+  }
+
+  if (pathname === '/api/adzuna' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const badField = ['appId', 'appKey'].find(key => body[key] !== undefined
+      && (typeof body[key] !== 'string' || body[key].length > MAX_PROVIDER_SECRET_LENGTH));
+    if (badField) {
+      return send(res, 400, { error: `${badField} must be a string of at most ${MAX_PROVIDER_SECRET_LENGTH} characters.` });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.adzuna || {};
+    const appId = String(body.appId || '').trim() || String(current.appId || '').trim();
+    const appKey = String(body.appKey || '').trim() || String(current.appKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.adzuna;
+    } else {
+      secrets.adzuna = { ...(appId ? { appId } : {}), ...(appKey ? { appKey } : {}) };
+      if (!secrets.adzuna.appId && !secrets.adzuna.appKey) delete secrets.adzuna;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    config.connections = config.connections || {};
+    if (body.search && typeof body.search === 'object') {
+      const currentSearch = adzunaSearchSettings(config);
+      const keep = (value, fallback, max) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : fallback);
+      const country = String(body.search.country ?? '').trim().toLowerCase();
+      config.connections.adzunaSearch = {
+        what: keep(body.search.what, currentSearch.what, 200),
+        where: keep(body.search.where, currentSearch.where, 120),
+        country: /^[a-z]{2}$/.test(country) ? country : currentSearch.country,
+      };
+    }
+    if (typeof body.enabled === 'boolean') {
+      config.connections.providers = { ...(config.connections.providers || {}), adzuna: body.enabled };
+    }
+    saveConfig(config);
+    writeOnboardingArtifacts(config);
+    const { appId: storedId } = adzunaKeys();
+    return send(res, 200, {
+      ok: true,
+      enabled: Boolean(config.connections?.providers?.adzuna),
+      configured: adzunaConfigured(),
+      fromEnvironment: adzunaFromEnvironment(),
+      appIdHint: storedId ? `${storedId.slice(0, 4)}…` : '',
+      search: adzunaSearchSettings(),
+      connections: connectionStatus(),
+    });
+  }
+
+  if (pathname === '/api/application-notes' && req.method === 'GET') {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const company = String(url.searchParams.get('company') || '').trim();
+    const role = String(url.searchParams.get('role') || '').trim();
+    if (!company && !role) return send(res, 400, { error: 'Provide a company or a role.' });
+    const key = identityKeyFor(company, role);
+    const { notes, timeline } = readApplicationNotes(jobDb(), key);
+    return send(res, 200, {
+      ok: true,
+      identityKey: key,
+      notes: notes || { company, role, salary_asked: '', contact: '', applied_via: '', notes: '' },
+      timeline,
+    });
+  }
+
+  if (pathname === '/api/application-notes' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const company = String(body.company || '').trim();
+    const role = String(body.role || '').trim();
+    if (!company && !role) return send(res, 400, { error: 'Provide a company or a role.' });
+    const key = identityKeyFor(company, role);
+    upsertApplicationNotes(jobDb(), key, { ...body, company, role });
+    const { notes, timeline } = readApplicationNotes(jobDb(), key);
+    return send(res, 200, { ok: true, identityKey: key, notes, timeline });
+  }
+
+  if (pathname === '/api/application-timeline' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const company = String(body.company || '').trim();
+    const role = String(body.role || '').trim();
+    if (!company && !role) return send(res, 400, { error: 'Provide a company or a role.' });
+    const key = identityKeyFor(company, role);
+    if (body.deleteId !== undefined) {
+      deleteTimelineEntry(jobDb(), key, body.deleteId);
+    } else {
+      const note = String(body.note || '').trim();
+      if (!note) return send(res, 400, { error: 'Write what happened before adding it.' });
+      addTimelineEntry(jobDb(), key, body);
+    }
+    const { notes, timeline } = readApplicationNotes(jobDb(), key);
+    return send(res, 200, { ok: true, identityKey: key, notes, timeline });
+  }
+
+  if (pathname === '/api/target-companies' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      companies: currentTargetCompanies().map(company => ({
+        ...company,
+        boards: company.boards.map(url => ({ url, provider: classifyBoardUrl(url) })),
+      })),
+    });
+  }
+
+  if (pathname === '/api/target-companies' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const incoming = Array.isArray(body.companies) ? body.companies : [];
+    const cleaned = [];
+    const seen = new Set();
+    for (const item of incoming.slice(0, 60)) {
+      const name = String(item?.name || '').trim().slice(0, 80);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const boards = [];
+      for (const board of (Array.isArray(item?.boards) ? item.boards : []).slice(0, 6)) {
+        let url = String(typeof board === 'string' ? board : board?.url || '').trim();
+        if (!url) continue;
+        if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+        try {
+          const parsed = new URL(url);
+          if (!/^https?:$/.test(parsed.protocol)) continue;
+          boards.push(parsed.toString());
+        } catch {}
+      }
+      cleaned.push({ name, boards });
+    }
+    config.connections = config.connections || {};
+    config.connections.targetCompanies = cleaned;
+    saveConfig(config);
+    writeOnboardingArtifacts(config);
+    return send(res, 200, {
+      ok: true,
+      companies: cleaned.map(company => ({
+        ...company,
+        boards: company.boards.map(url => ({ url, provider: classifyBoardUrl(url) })),
+      })),
+      connections: connectionStatus(),
+    });
+  }
+
+  if (pathname === '/api/search-lanes' && req.method === 'GET') {
+    return send(res, 200, { ok: true, query: String(config.connections?.linkedin?.searchQuery || ''), maxLanes: MAX_SEARCH_LANES });
+  }
+
+  if (pathname === '/api/search-lanes' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const raw = Array.isArray(body.lanes) ? body.lanes.join('; ') : String(body.query || '');
+    const lanes = splitQueries(raw).map(lane => lane.slice(0, 80));
+    if (!lanes.length) return send(res, 400, { error: 'Provide at least one search lane.' });
+    config.connections = config.connections || {};
+    config.connections.linkedin = {
+      ...(config.connections.linkedin || {}),
+      searchQuery: lanes.join('; '),
+    };
+    saveConfig(config);
+    return send(res, 200, { ok: true, query: lanes.join('; '), lanes, maxLanes: MAX_SEARCH_LANES });
   }
 
   if (pathname === '/api/connections/email/import' && req.method === 'POST') {
@@ -4761,10 +5146,12 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/browser/linkedin-search' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req) || '{}');
-    const query = String(body.query || '').trim();
-    const limit = Math.max(1, Math.min(Number(body.limit || 10), 25));
+    const query = String(body.query || config.connections?.linkedin?.searchQuery || '').trim();
+    const limit = Math.max(1, Math.min(Number(body.limit || 6), 12));
     const args = ['linkedin-search', '--limit', String(limit)];
     if (query) args.push('--query', query);
+    const companies = linkedInFallbackCompanies(config.connections?.targetCompanies || []);
+    if (companies.length) args.push('--companies', companies.join('; '));
     const activePids = browserProfileProcessIds();
     if (activePids.length) {
       const message = browserProfileBusyMessage(activePids.length);
@@ -4852,12 +5239,110 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, { ok: true, decision: entry, suppressedByTracker, scanState: updatedState });
   }
 
+
+  if (pathname === '/api/board' && req.method === 'GET') {
+    const db = jobDb();
+    const { rows, fetchedRows, totalRows, rowLimit } = loadBoardRows(db);
+    return send(res, 200, {
+      roles: rows.map(row => {
+        const score = dbScore(row.score);
+        return {
+          title: row.title || [row.role, row.company].filter(Boolean).join(' - '),
+          company: row.company || '',
+          role: row.role || '',
+          link: row.url || '',
+          source: row.source || '',
+          location: row.location || '',
+          comp: row.compensation || '',
+          score,
+          scoreText: row.score_breakdown || '',
+          action: row.recommended_action || '',
+          applyType: row.apply_type || '',
+          verification: row.verification || '',
+          reportFile: row.report_file || '',
+          reportDate: row.scored_at || row.last_seen_at || row.first_seen_at || '',
+          needsDetails: score == null,
+          timesSeen: row.timesSeen,
+        };
+      }),
+      totalRows,
+      rowLimit,
+      truncated: totalRows > fetchedRows,
+    });
+  }
+
+  if (pathname === '/api/score-jd' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return send(res, 400, { error: 'Invalid JSON body.' });
+    }
+    const jdText = String(body.jdText || '').trim();
+    const company = String(body.company || '').trim().slice(0, 120);
+    const role = String(body.role || '').trim().slice(0, 160);
+    const url = String(body.url || '').trim();
+    if (jdText.length < 120) return send(res, 400, { error: 'Paste the full job description - that is too short to score.' });
+    if (jdText.length > 200000) return send(res, 400, { error: 'That job description is too large.' });
+    if (!company && !role) return send(res, 400, { error: 'Provide the company or the role this description belongs to.' });
+    if (url && !/^https?:\/\//i.test(url)) return send(res, 400, { error: 'Job URL must be an http(s) link.' });
+    const identity = identityKeyFor(company, role);
+    const existing = jdJobs.get(identity);
+    if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+      return send(res, 409, { error: `Already scoring ${role || company} in the background - give it a minute, or check the board card for progress.` });
+    }
+    if (existing?.status === 'error') { try { rmSync(existing.jdPath, { force: true }); } catch {} }
+    const jdPath = resolve(DATA_ROOT, `pasted-jd-${Date.now()}-${randomBytes(4).toString('hex')}.txt`);
+    writeTextAtomic(jdPath, jdText, { mode: 0o600 });
+    const job = {
+      identity, company, role, url, jdPath,
+      status: 'queued', error: '',
+      queuedAt: new Date().toISOString(), startedAt: '', finishedAt: '',
+      pid: 0,
+    };
+    jdJobs.set(identity, job);
+    jdJobQueue.push(identity);
+    saveJdJob(job);
+    pumpJdJobQueue();
+    return send(res, 202, { ok: true, job: jdJobSummary(job) });
+  }
+
+  if (pathname === '/api/jd-jobs' && req.method === 'GET') {
+    return send(res, 200, { jobs: [...jdJobs.values()].map(jdJobSummary) });
+  }
+
+  if (pathname === '/api/score-jd/retry' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return send(res, 400, { error: 'Invalid JSON body.' });
+    }
+    const identity = String(body.identity || '').trim();
+    const job = jdJobs.get(identity);
+    if (!job || job.status !== 'error') return send(res, 404, { error: 'Nothing to retry for that role.' });
+    if (!existsSync(job.jdPath)) return send(res, 404, { error: 'The pasted job description is no longer available on this server - paste it again.' });
+    job.status = 'queued';
+    job.error = '';
+    job.queuedAt = new Date().toISOString();
+    job.startedAt = '';
+    job.finishedAt = '';
+    job.pid = 0;
+    jdJobQueue.push(identity);
+    saveJdJob(job);
+    pumpJdJobQueue();
+    return send(res, 202, { ok: true, job: jdJobSummary(job) });
+  }
+
   if (pathname === '/api/chat' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req) || '{}');
     const message = String(body.message || '').trim();
     if (!message) return send(res, 400, { error: 'Message is required' });
     if (isVerifiedScanRequest(message)) return streamVerifiedScanChat(message, res);
     const prompt = buildAgentPrompt({ message, view: body.view, attachments: body.attachments });
+    if (config.llm?.provider === 'cursor') {
+      return streamCursor(prompt, res, { displayUserMessage: message, model: body.model });
+    }
     if ((config.llm?.provider || 'openai') === 'anthropic') {
       return streamClaude(prompt, res, { displayUserMessage: message });
     }
@@ -4873,7 +5358,7 @@ async function handleApi(req, res, pathname) {
       return streamVerifiedScanReport(res);
     }
     const args = body.dryRun === false ? ['scan.mjs', '--no-websearch'] : ['scan.mjs', '--dry-run', '--no-websearch'];
-    return streamProcess(process.execPath, args, res);
+    return streamProcess(process.execPath, args, res, childEnvForAdzunaScan());
   }
 
   if (pathname === '/api/tailor' && req.method === 'POST') {
@@ -4928,6 +5413,38 @@ function streamHeaders(res) {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Accel-Buffering': 'no',
+  });
+}
+
+function streamCursor(message, res, options = {}) {
+  streamHeaders(res);
+  appendChatLog({ role: 'user', at: new Date().toISOString(), message: options.displayUserMessage || message });
+  setImmediate(async () => {
+    let assistantText = '';
+    try {
+      assistantText = await streamCursorPrompt({
+        prompt: message,
+        cwd: PROFILE_ROOT,
+        model: options.model || config.llm?.model,
+        apiKey: cursorApiKey(),
+        onText: chunk => res.write(chunk),
+      });
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: assistantText });
+      if (options.localEdit) {
+        const event = `\n\n[app-action] ${JSON.stringify(options.localEdit)}\n`;
+        assistantText += event;
+        res.write(event);
+      }
+      res.write('\n\n[process exited with code 0]\n');
+      res.end();
+    } catch (err) {
+      const text = `The Cursor assistant could not answer. ${err.message}\n`;
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message: assistantText || text });
+      if (!res.writableEnded) {
+        res.write(`${text}\n[process exited with code 1]\n`);
+        res.end();
+      }
+    }
   });
 }
 
@@ -5040,9 +5557,9 @@ function streamCodex(message, res, options = {}) {
   });
 }
 
-function streamProcess(command, args, res) {
+function streamProcess(command, args, res, env = localClaudeEnv()) {
   streamHeaders(res);
-  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', chunk => res.write(chunk.toString()));
   child.stderr.on('data', chunk => res.write(chunk.toString()));
   child.on('close', code => {
@@ -5054,7 +5571,7 @@ function streamProcess(command, args, res) {
 function streamVerifiedScanReport(res) {
   streamHeaders(res);
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will direct-fetch shortlisted URLs, score them against the locked profile, and save the dated report.\n\n`);
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', chunk => {
@@ -5084,7 +5601,7 @@ function streamVerifiedScanReport(res) {
 function streamVerifiedScanChat(userMessage, res) {
   streamHeaders(res);
   appendChatLog({ role: 'user', at: new Date().toISOString(), message: userMessage });
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will save the dated scan report and return the shortlist here.\n\n`);
@@ -5116,6 +5633,10 @@ function streamTailorPackage(payload, res) {
   streamHeaders(res);
   setImmediate(() => {
     const stamp = Date.now();
+    if ((config.llm?.provider || 'openai') === 'cursor') {
+      // Cursor is selected for chat and scoring; this endpoint still writes
+      // files through the existing local package generator.
+    }
     const inputPath = packageInputPath('tailor', stamp);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
     appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
@@ -5335,6 +5856,16 @@ const server = createServer(async (req, res) => {
     send(res, err.statusCode || 500, { error: err.message });
   }
 });
+
+recoverJdQueue();
+
+function handleProcessExit() {
+  shutdownJdQueue();
+}
+
+process.on('SIGTERM', () => { handleProcessExit(); process.exit(0); });
+process.on('SIGINT', () => { handleProcessExit(); process.exit(0); });
+process.on('SIGHUP', () => { handleProcessExit(); process.exit(0); });
 
 server.listen(PORT, HOST, () => {
   console.log(`Suitor (${CANDIDATE_NAME}) web app listening on http://${HOST}:${PORT}`);
