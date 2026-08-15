@@ -45,8 +45,11 @@ const RESULTS_PATH = resolve(BROWSER_ROOT, 'linkedin-results.json');
 const CANCEL_PATH = resolve(BROWSER_ROOT, 'cancel.flag');
 const DEFAULT_QUERY = envValue('SUITOR_LINKEDIN_QUERY', 'SUITOR_LINKEDIN_QUERY', '"Chief of Staff" OR "Strategic Operations" OR "Director of Partnerships" remote');
 const DEFAULT_LOCATION = envValue('SUITOR_LINKEDIN_LOCATION', 'SUITOR_LINKEDIN_LOCATION', 'United States');
-// 103644278 = United States. Override with SUITOR_LINKEDIN_GEO_ID, or "none" to disable.
-const DEFAULT_GEO_ID = (value => (/^(none|off|0)$/i.test(value) ? '' : value))(envValue('SUITOR_LINKEDIN_GEO_ID', 'SUITOR_LINKEDIN_GEO_ID', '103644278'));
+// 103644278 = United States. Used by default only for US searches.
+// Override with SUITOR_LINKEDIN_GEO_ID for any location, or "none" to disable.
+const RAW_GEO_ID = envValue('SUITOR_LINKEDIN_GEO_ID', 'SUITOR_LINKEDIN_GEO_ID', '');
+const GEO_ID_EXPLICIT = Boolean(String(RAW_GEO_ID || '').trim());
+const DEFAULT_GEO_ID = (value => (/^(none|off|0)$/i.test(value) ? '' : value))(RAW_GEO_ID || '103644278');
 const DEFAULT_WORKPLACE = envValue('SUITOR_LINKEDIN_WORKPLACE', 'SUITOR_LINKEDIN_WORKPLACE', '2');
 const DEFAULT_RECENCY = envValue('SUITOR_LINKEDIN_RECENCY', 'SUITOR_LINKEDIN_RECENCY', 'r604800');
 const DEFAULT_EXPERIENCE = envValue('SUITOR_LINKEDIN_EXPERIENCE', 'SUITOR_LINKEDIN_EXPERIENCE', '4,5,6');
@@ -348,13 +351,23 @@ function parseArgs() {
   return args;
 }
 
+function isUsLinkedInLocation(location) {
+  const value = String(location || '').trim();
+  if (!value) return true;
+  return /^(united states(?: of america)?|usa|u\.s\.a\.?|u\.s\.?|us)$/i.test(value);
+}
+
 export function linkedInSearchUrl(query) {
   const params = new URLSearchParams();
   params.set('keywords', query || DEFAULT_QUERY);
   params.set('location', DEFAULT_LOCATION);
   // LinkedIn scopes job search by geoId; the free-text `location` alone is
   // advisory and LinkedIn falls back to the session's own geography.
-  if (DEFAULT_GEO_ID) params.set('geoId', DEFAULT_GEO_ID);
+  // The default US geoId is only attached for US / empty locations unless
+  // SUITOR_LINKEDIN_GEO_ID was set explicitly.
+  if (DEFAULT_GEO_ID && (GEO_ID_EXPLICIT || isUsLinkedInLocation(DEFAULT_LOCATION))) {
+    params.set('geoId', DEFAULT_GEO_ID);
+  }
   if (DEFAULT_WORKPLACE) params.set('f_WT', DEFAULT_WORKPLACE);
   if (DEFAULT_RECENCY) params.set('f_TPR', DEFAULT_RECENCY);
   if (DEFAULT_EXPERIENCE) params.set('f_E', DEFAULT_EXPERIENCE);
@@ -468,9 +481,15 @@ export function linkedInJobKey(value = {}) {
   }
 }
 
-async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
+export async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
   return page.evaluate(({ max, excluded }) => {
     const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const cardLines = value => String(value || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split(/\n|\s{2,}/)
+      .map(line => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
     const jobKey = rawUrl => {
       const url = String(rawUrl || '').trim();
       try {
@@ -496,8 +515,8 @@ async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
       if (seen.has(key) || excludedSet.has(key)) continue;
       seen.add(key);
       const card = anchor.closest('[data-job-id], li, div');
-      const text = normalize(card?.innerText || '');
-      const lines = text.split(/\s{2,}|\n/).map(normalize).filter(Boolean);
+      const lines = cardLines(card?.innerText || '');
+      const text = lines.join(' ') || normalize(card?.innerText || '');
       const company = lines.find(line => line !== title && line.length > 1 && line.length < 80) || '';
       const location = lines.find(line => /remote|hybrid|united states|atlanta|new york|san francisco|boston|austin|charlotte|nashville/i.test(line)) || '';
       rows.push({ key, title, company, location, url: href, source: 'linkedin-browser', snippet: text.slice(0, 700) });
@@ -510,8 +529,8 @@ async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
       if (!/^\d+$/.test(id)) continue;
       const key = `linkedin:${id}`;
       if (seen.has(key) || excludedSet.has(key)) continue;
-      const text = normalize(card.innerText || '');
-      const lines = text.split(/\s{2,}|\n/).map(normalize).filter(Boolean);
+      const lines = cardLines(card.innerText || '');
+      const text = lines.join(' ');
       const title = (lines[0] || '').replace(/ with verification$/i, '');
       if (!title || title.length < 4) continue;
       seen.add(key);

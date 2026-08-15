@@ -78,7 +78,7 @@ Quick Scan and Verified Scan read exclude keywords and automatic-rejection phras
 |---|---|
 | `SUITOR_LINKEDIN_QUERY` | Default LinkedIn query |
 | `SUITOR_LINKEDIN_LOCATION` | Location filter (free-text; LinkedIn treats this as advisory) |
-| `SUITOR_LINKEDIN_GEO_ID` | LinkedIn `geoId` (default `103644278` = United States). Set `none` to omit it. |
+| `SUITOR_LINKEDIN_GEO_ID` | LinkedIn `geoId`. Default `103644278` (United States) applies only to US / United States / empty location. Set an explicit id for any location, or `none` to omit it. |
 | `SUITOR_LINKEDIN_WORKPLACE` | Workplace type |
 | `SUITOR_LINKEDIN_EXPERIENCE` | Experience levels |
 | `SUITOR_LINKEDIN_RECENCY` | Recency filter |

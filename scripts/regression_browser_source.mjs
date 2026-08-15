@@ -6,6 +6,7 @@ import { spawnSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { isSuitorBrowserProfileCommand, posixBrowserProfileProcessIds } from './browser_profile_command.mjs';
 
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-browser-regression-'));
 process.env.SUITOR_PROFILE_ROOT = profileRoot;
@@ -22,6 +23,7 @@ const {
   linkedInSearchUrl,
   linkedInFilterSummary,
   isBlockedSourceResult,
+  collectLinkedInJobSeeds,
   extractLinkedInJobs,
   classifyLinkedInSessionSnapshot,
   waitForManualLoginClose,
@@ -66,10 +68,49 @@ const disabledFilters = linkedInSearchParams({
 assert.equal(disabledFilters.geoId, undefined);
 assert.equal(disabledFilters.f_SB2, undefined);
 
-const serverSource = readFileSync(new URL('../web/server.mjs', import.meta.url), 'utf-8');
+const canadaFilters = linkedInSearchParams({
+  SUITOR_LINKEDIN_LOCATION: 'Canada',
+});
+assert.equal(canadaFilters.location, 'Canada');
+assert.equal(canadaFilters.geoId, undefined, 'default US geoId must not attach to a non-US location');
+
+const canadaExplicitGeo = linkedInSearchParams({
+  SUITOR_LINKEDIN_LOCATION: 'Canada',
+  SUITOR_LINKEDIN_GEO_ID: '101174742',
+});
+assert.equal(canadaExplicitGeo.location, 'Canada');
+assert.equal(canadaExplicitGeo.geoId, '101174742');
+
+const usLocationStillDefault = linkedInSearchParams({
+  SUITOR_LINKEDIN_LOCATION: 'United States',
+});
+assert.equal(usLocationStillDefault.geoId, '103644278');
+
+const serverSource = readFileSync(new URL('../web/server.mjs', import.meta.url), 'utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 assert.match(serverSource, /function browserProfileProcessIds\(\) \{\n  if \(process\.platform !== 'win32'\) \{\n    const result = spawnSync\('ps'/);
+assert.match(serverSource, /posixBrowserProfileProcessIds\(result\.stdout, BROWSER_PROFILE_DIR, process\.pid\)/);
 assert.match(serverSource, /function releaseBrowserProfileProcesses\(\) \{\n  const pids = browserProfileProcessIds\(\);/);
 assert.doesNotMatch(serverSource, /function releaseBrowserProfileProcesses\(\) \{\n  if \(process\.platform !== 'win32'\) return \[\];/);
+
+const profileDir = '/Users/me/.suitor-runtime/browser/chromium-profile';
+assert.equal(isSuitorBrowserProfileCommand(`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir}`, profileDir), true);
+assert.equal(isSuitorBrowserProfileCommand(`/ms-playwright/chromium/chrome-mac/Chromium.app/Contents/MacOS/Chromium --user-data-dir="${profileDir}"`, profileDir), true);
+assert.equal(isSuitorBrowserProfileCommand(`/opt/google/chrome --user-data-dir=${profileDir}/`, profileDir), true);
+assert.equal(isSuitorBrowserProfileCommand(`vim ${profileDir}/Preferences`, profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand(`tail -f ${profileDir}/chrome_debug.log`, profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand(`node /app/server.mjs --profile ${profileDir}`, profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand('/usr/bin/google-chrome --user-data-dir=/tmp/other-profile', profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand(`/usr/bin/google-chrome --user-data-dir=${profileDir}-extra`, profileDir), false);
+
+const psOutput = [
+  `  111 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir}`,
+  `  222 vim ${profileDir}/Preferences`,
+  `  333 tail -f ${profileDir}/chrome_debug.log`,
+  `  444 /opt/homebrew/bin/node /app --config ${profileDir}`,
+  '  555 /usr/bin/google-chrome --user-data-dir=/tmp/other-profile',
+  `  666 /opt/google/chrome --user-data-dir=${profileDir}-extra`,
+].join('\n');
+assert.deepEqual(posixBrowserProfileProcessIds(psOutput, profileDir, 999), [111]);
 
 assert.match(linkedInFilterSummary(), /Remote/);
 assert.match(linkedInFilterSummary(), /Past week/);
@@ -276,6 +317,14 @@ await cardPage.setContent(`
     </body>
   </html>
 `);
+const cardSeeds = await collectLinkedInJobSeeds(cardPage, 5);
+const seedRows = Array.isArray(cardSeeds) ? cardSeeds : cardSeeds.rows;
+assert.equal(seedRows.length, 1, 'card-only harvest should parse data-job-id cards before opening details');
+assert.equal(seedRows[0].title, 'Director of Operations');
+assert.equal(seedRows[0].company, 'Acme Labs');
+assert.equal(seedRows[0].location, 'Remote - United States');
+assert.match(seedRows[0].url, /\/jobs\/view\/555/);
+
 const cardExtracted = await extractLinkedInJobs(cardPage, 5);
 await cardOnlyContext.close();
 assert.equal(cardExtracted.length, 1, 'LinkedIn harvest should find cards that only have data-job-id');

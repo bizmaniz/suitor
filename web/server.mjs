@@ -11,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import { posixBrowserProfileProcessIds } from '../scripts/browser_profile_command.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -3284,12 +3285,7 @@ function browserProfileProcessIds() {
   if (process.platform !== 'win32') {
     const result = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf-8' });
     if (result.error) return [];
-    const needle = BROWSER_PROFILE_DIR.toLowerCase();
-    return String(result.stdout || '')
-      .split('\n')
-      .filter(line => line.toLowerCase().includes(needle))
-      .map(line => Number(line.trim().split(/\s+/)[0]))
-      .filter(pid => Number.isFinite(pid) && pid > 0 && pid !== process.pid);
+    return posixBrowserProfileProcessIds(result.stdout, BROWSER_PROFILE_DIR, process.pid);
   }
   const escapedProfile = BROWSER_PROFILE_DIR.replace(/'/g, "''").toLowerCase();
   const script = [
