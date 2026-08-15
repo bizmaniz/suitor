@@ -12,6 +12,16 @@ import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
 import { streamCursorPrompt } from './cursor_agent.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import {
+  loadProviderSecrets,
+  saveProviderSecretsFile,
+  restrictPrivateFile,
+  cursorApiKeyFrom,
+  childEnvForCli,
+  childEnvForCursorScan,
+  nodeVersionAtLeast,
+} from './provider_secrets.mjs';
+import { collectCursorContext, formatCursorContextMarkdown } from './cursor_context.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -191,24 +201,10 @@ const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
 let providerSecretsUnreadable = '';
 
 function providerSecrets() {
-  let raw;
-  try {
-    raw = readFileSync(PROVIDER_SECRETS_PATH, 'utf-8');
-  } catch (err) {
-    providerSecretsUnreadable = err.code === 'ENOENT' ? '' : `${err.code || 'read error'}: ${err.message}`;
-    if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
-    return {};
-  }
-  try {
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
-    providerSecretsUnreadable = '';
-    return parsed;
-  } catch (err) {
-    providerSecretsUnreadable = `corrupt file: ${err.message}`;
-    console.error(`Suitor: cannot parse ${PROVIDER_SECRETS_PATH} - ${err.message}`);
-    return {};
-  }
+  const loaded = loadProviderSecrets(PROVIDER_SECRETS_PATH);
+  providerSecretsUnreadable = loaded.error || '';
+  if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+  return loaded.secrets;
 }
 
 function saveProviderSecrets(next) {
@@ -219,12 +215,12 @@ function saveProviderSecrets(next) {
     throw err;
   }
   mkdirSync(DATA_ROOT, { recursive: true });
-  writeTextAtomic(PROVIDER_SECRETS_PATH, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  saveProviderSecretsFile(PROVIDER_SECRETS_PATH, next);
+  restrictPrivateFile(PROVIDER_SECRETS_PATH);
 }
 
 function cursorApiKey() {
-  const stored = providerSecrets().cursor || {};
-  return String(process.env.CURSOR_API_KEY || stored.apiKey || '').trim();
+  return cursorApiKeyFrom(process.env, providerSecrets());
 }
 
 function cursorFromEnvironment() {
@@ -241,10 +237,8 @@ function cursorKeyHint() {
 }
 
 function localClaudeEnv() {
-  const cursorKey = cursorApiKey();
   return {
-    ...process.env,
-    ...(cursorKey ? { CURSOR_API_KEY: cursorKey } : {}),
+    ...childEnvForCli(process.env, { provider: String(config.llm?.provider || '') }),
     SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
@@ -3635,6 +3629,11 @@ ${recentHistory}
 
 Attached/uploaded files:
 ${attachmentLines}
+${String(config.llm?.provider || '').toLowerCase() === 'cursor' ? `\n${formatCursorContextMarkdown(collectCursorContext({
+    profilePaths: [docs.profile],
+    trackerPath: TRACKER_PATH,
+    attachments,
+  }))}` : ''}
 
 User request:
 ${message}`;
@@ -4176,7 +4175,7 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/env-check' && req.method === 'GET') {
     return send(res, 200, {
-      node: { version: process.version, ok: Number(process.versions.node.split('.')[0]) >= 22 },
+      node: { version: process.version, ok: nodeVersionAtLeast(process.versions.node, '22.13.0') },
       codex: detectCli('codex'),
       claude: detectCli('claude'),
       cursor: {
@@ -5180,7 +5179,7 @@ function streamProcess(command, args, res) {
 function streamVerifiedScanReport(res) {
   streamHeaders(res);
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will direct-fetch shortlisted URLs, score them against the locked profile, and save the dated report.\n\n`);
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', chunk => {
@@ -5210,7 +5209,7 @@ function streamVerifiedScanReport(res) {
 function streamVerifiedScanChat(userMessage, res) {
   streamHeaders(res);
   appendChatLog({ role: 'user', at: new Date().toISOString(), message: userMessage });
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will save the dated scan report and return the shortlist here.\n\n`);
