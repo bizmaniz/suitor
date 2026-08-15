@@ -8,7 +8,7 @@ import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writ
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { waitForSuitorServer } from './regression_server_wait.mjs';
+import { waitForChildExit, waitForSuitorServer } from './regression_server_wait.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-adzuna-'));
@@ -201,6 +201,7 @@ try {
 
   console.log('regression_adzuna_config passed');
 } finally {
-  server.kill('SIGTERM');
+  if (server.exitCode == null && server.signalCode == null) server.kill('SIGTERM');
+  await waitForChildExit(server);
   rmSync(profileRoot, { recursive: true, force: true });
 }
