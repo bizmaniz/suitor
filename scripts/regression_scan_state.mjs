@@ -301,6 +301,17 @@ try {
   assert(countCompanyRoleRows(boomerangResubmit.body.trackerMarkdown, /^##\s+Active Applications/i, 'Boomerang AI', 'Chief of Staff') === 1, 'resubmission should restore exactly one active row', boomerangResubmit.body.trackerMarkdown);
   assert(countCompanyRoleRows(boomerangResubmit.body.trackerMarkdown, /^##\s+Rejected\b/i, 'Boomerang AI', 'Chief of Staff') === 0, 'resubmission should remove the stale rejected row', boomerangResubmit.body.trackerMarkdown);
 
+  const needsJdPass = await postJson(token, '/api/scan-state/decision', {
+    decision: 'passed',
+    company: 'NeedsJd Co',
+    role: 'Unscored Role',
+    title: 'Unscored Role - NeedsJd Co',
+    score: null,
+    reason: 'Passed a card that still needs a JD',
+  });
+  assert(needsJdPass.res.status === 200, 'scan decision with a null score should save', JSON.stringify(needsJdPass.body));
+  assert(needsJdPass.body.decision?.score === null, 'API should round-trip an unscored decision as null, not 0', JSON.stringify(needsJdPass.body.decision));
+
   const learning = await api(token, '/api/learning-summary');
   assert(learning.res.status === 200, 'learning summary endpoint should respond', `HTTP ${learning.res.status}`);
   assert(learning.body.personKey === 'test candidate', 'learning summary should stay profile-local', JSON.stringify(learning.body));
@@ -331,6 +342,10 @@ try {
     assert(decisionCount >= 3, 'SQLite scan_decisions table should contain explicit suppressive scan decisions', `count=${decisionCount}`);
     assert(productAi?.status === 'screen_scheduled' && productAi?.source === 'LinkedIn', 'SQLite should preserve latest application stage/source for Product.AI', JSON.stringify(productAi));
     assert(canopy?.decision === 'passed' && canopy?.source === 'BuiltIn', 'SQLite should preserve newer overriding Canopy scan decision', JSON.stringify(canopy));
+    const needsJd = db.prepare('SELECT score FROM scan_decisions WHERE normalized_company = ? AND normalized_role = ?')
+      .get('needsjd co', 'unscored role');
+    assert(needsJd, 'unscored scan decision should be persisted');
+    assert(needsJd.score === null, 'unscored scan decisions must persist as SQL NULL, not a fabricated 0', JSON.stringify(needsJd));
   } finally {
     db.close();
   }
