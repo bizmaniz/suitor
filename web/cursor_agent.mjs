@@ -4,13 +4,38 @@
 // SUITOR_CURSOR_STUB: path to a text file used instead of the SDK, so
 // regressions never spend Cursor tokens or require a key.
 //
-// Do not use `await using` here: Node's `node --check` (and engines.node
-// 22.5) do not parse Explicit Resource Management. Dispose with close().
+// SUITOR_CURSOR_CAPTURE_PROMPT: if set, write the prompt to that path before
+// the stub or SDK runs so tests can assert inlined profile/JD text.
+//
+// Do not use `await using` here: Node's `node --check` does not parse Explicit
+// Resource Management even on the Cursor SDK floor (Node 22.13). Dispose with close().
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync } from 'fs';
+import { cursorApiKeyFrom as readCursorApiKey } from './provider_secrets.mjs';
 
 export function cursorApiKeyFrom(env = process.env, secrets = {}) {
-  return String(env.CURSOR_API_KEY || secrets.cursor?.apiKey || '').trim();
+  return readCursorApiKey(env, secrets);
+}
+
+const KNOWN_CURSOR_MODELS = new Set([
+  'composer-2.5',
+  'composer-2',
+  'composer-1.5',
+  'gpt-5',
+  'gpt-5-mini',
+  'gpt-5-nano',
+  'claude-4-sonnet',
+  'claude-4-opus',
+  'grok-4',
+]);
+
+const CURSOR_MODEL_PATTERN = /^[a-z0-9][a-z0-9.-]{0,63}$/;
+
+export function validateCursorModel(id) {
+  const value = String(id || '').trim();
+  if (KNOWN_CURSOR_MODELS.has(value)) return value;
+  if (value && value.length >= 1 && value.length <= 64 && CURSOR_MODEL_PATTERN.test(value)) return value;
+  throw new Error(`Invalid Cursor model id "${id}". Use a known id such as composer-2.5, or a lowercase letters/digits/dots/hyphens id up to 64 characters.`);
 }
 
 export function selectedLlmProvider(env = process.env, config = {}) {
@@ -25,9 +50,15 @@ function stubText() {
   return readFileSync(path, 'utf-8');
 }
 
+function capturePromptIfRequested(prompt) {
+  const dest = String(process.env.SUITOR_CURSOR_CAPTURE_PROMPT || '').trim();
+  if (!dest) return;
+  writeFileSync(dest, String(prompt || ''), 'utf-8');
+}
+
 function cursorModel(preferred = '') {
   const value = String(preferred || process.env.SUITOR_CURSOR_MODEL || 'composer-2.5').trim();
-  return value || 'composer-2.5';
+  return validateCursorModel(value || 'composer-2.5');
 }
 
 async function loadAgent() {
@@ -61,6 +92,7 @@ function failIfErrored(result) {
 
 // One-shot: full assistant text. Used for scoring and other non-stream jobs.
 export async function completeCursorPrompt({ prompt, cwd, model = '', apiKey = '' } = {}) {
+  capturePromptIfRequested(prompt);
   const stub = stubText();
   if (stub) return stub;
   const key = requireCursorKey(apiKey);
@@ -79,6 +111,7 @@ function assistantTextFromEvent(event) {
 
 // Streaming chat. onText is called with each assistant text chunk.
 export async function streamCursorPrompt({ prompt, cwd, model = '', apiKey = '', onText = () => {} } = {}) {
+  capturePromptIfRequested(prompt);
   const stub = stubText();
   if (stub) {
     onText(stub);
