@@ -65,7 +65,7 @@ assert.match(serverSource, /manualMatches\.length[\s\S]+manual_review/, 'manual-
 assert.doesNotMatch(serverSource, /soft_floor_base_|hard_floor_base_|Salesforce-to-HubSpot|Hope Industrial/i, 'shared server code should not contain profile-specific scoring or resume history');
 assert.match(rootPortals, /tracked_companies:\s*\[\]/, 'checked-in portal config should not ship target companies');
 assert.match(rootPortals, /search_queries:\s*\[\]/, 'checked-in portal config should not ship profile-specific searches');
-for (const view of ['applications', 'scans', 'capture', 'resume', 'learning', 'assessments', 'reference', 'settings']) {
+for (const view of ['applications', 'scans', 'board', 'capture', 'resume', 'learning', 'assessments', 'reference', 'settings']) {
   assert.match(indexHtml, new RegExp(`data-view="${view}"`), `${view} should be present in primary navigation`);
   assert.equal((indexHtml.match(new RegExp(`id="${view}View"`, 'g')) || []).length, 1, `${view} should have one workspace`);
 }
@@ -178,7 +178,7 @@ try {
       assert.doesNotMatch(await page.locator('#learningSources').innerText(), /Unknown/, 'named learning sources should not render as Unknown');
     }
 
-    for (const view of ['applications', 'scans', 'capture', 'resume', 'learning', 'assessments', 'reference', 'settings']) {
+    for (const view of ['applications', 'scans', 'board', 'capture', 'resume', 'learning', 'assessments', 'reference', 'settings']) {
       await page.click(`[data-view="${view}"]`);
       await page.waitForSelector(`#${view}View.active`);
       const layout = await page.evaluate(() => ({
@@ -205,7 +205,7 @@ try {
   assert.equal(removed.body.captures.length, 0);
 
   const db = new DatabaseSync(resolve(runtimeRoot, 'suitor.sqlite'), { readOnly: true });
-  assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, '3');
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, '4');
   const captureRow = db.prepare('SELECT deleted_at FROM captures WHERE id = ?').get(captureId);
   assert(captureRow.deleted_at, 'removed captures should remain as soft-deleted profile-local rows');
   db.close();

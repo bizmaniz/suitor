@@ -22,6 +22,11 @@ const state = {
     assistantName: 'Assistant',
   },
   onboarding: null,
+  boardRoles: [],
+  boardVisible: [],
+  jdJobs: new Map(),
+  jdJobsPoller: null,
+  addJdRole: null,
 };
 
 localStorage.removeItem('suitorToken');
@@ -121,6 +126,19 @@ const els = {
   themeToggle: $('#themeToggle'),
   viewEyebrow: $('#viewEyebrow'),
   viewTitle: $('#viewTitle'),
+  boardFilter: $('#boardFilter'),
+  boardSort: $('#boardSort'),
+  boardRefreshBtn: $('#boardRefreshBtn'),
+  boardCount: $('#boardCount'),
+  boardResults: $('#boardResults'),
+  addJdDialog: $('#addJdDialog'),
+  addJdForm: $('#addJdForm'),
+  addJdTitle: $('#addJdTitle'),
+  addJdCancel: $('#addJdCancel'),
+  addJdError: $('#addJdError'),
+  jdCompany: $('#jdCompany'),
+  jdRole: $('#jdRole'),
+  jdText: $('#jdText'),
 };
 
 function headers(extra = {}) {
@@ -1554,8 +1572,8 @@ async function saveScanDecision(role, result, decision = 'passed', reason = '') 
     body: JSON.stringify({
       decision,
       title: role.title || '',
-      company: parsed.company,
-      role: parsed.role,
+      company: role.company || parsed.company,
+      role: role.role || parsed.role,
       url: role.link || '',
       source: role.source || '',
       reportFile: result.reportFile || '',
@@ -1583,6 +1601,216 @@ function scanCompanyRole(title) {
     return { company: parts[parts.length - 1], role: parts.slice(0, -1).join(' - ') };
   }
   return { company: '', role: title || '' };
+}
+
+function jdJobIdentity(company, role) {
+  return `${normalizeRoleKey(company)}::${normalizeRoleKey(role)}`;
+}
+
+function jdIdentityForRole(role) {
+  const parsed = scanCompanyRole(role.title || '');
+  return jdJobIdentity(role.company || parsed.company || '', role.role || parsed.role || role.title || '');
+}
+
+function jdJobForRole(role) {
+  return state.jdJobs.get(jdIdentityForRole(role)) || null;
+}
+
+function apiErrorMessage(raw) {
+  const trimmed = String(raw || '').trim();
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (parsed && typeof parsed.error === 'string' && parsed.error) return parsed.error;
+  } catch {}
+  return trimmed || 'Request failed.';
+}
+
+function boardBucket(role) {
+  const floor = state.meta.shortlistFloor || 75;
+  role.decision = scanDecisionForRole(role, { reportFile: role.reportFile }) || null;
+  if (role.decision && scanDecisionIsHidden(role.decision)) return 'passed';
+  if (scanNeedsDetails(role) || role.score == null) return 'needs-jd';
+  if (scanIsPassRecommendation(role)) return 'pass-recommended';
+  if (role.score >= floor) return 'shortlist';
+  return 'below';
+}
+
+function jdJobStatusLine(job) {
+  if (!job) return '';
+  if (job.status === 'queued') return '<p class="jd-job-status jd-job-queued">Queued — will start scoring automatically.</p>';
+  if (job.status === 'running') return '<p class="jd-job-status jd-job-running">Scoring in the background <span class="pulse-dots"><i></i><i></i><i></i></span></p>';
+  return `<p class="jd-job-status jd-job-error">Scoring failed: ${escapeHtml(job.error || 'unknown error')}</p>`;
+}
+
+function jdActionButtons(job, index) {
+  if (job && (job.status === 'queued' || job.status === 'running')) {
+    return '<button type="button" class="button-secondary" disabled>Scoring…</button>';
+  }
+  if (job?.status === 'error') {
+    return `
+      <button type="button" data-board-idx="${index}" data-board-act="retry-jd">Retry</button>
+      <button type="button" data-board-idx="${index}" data-board-act="add-jd">Add JD</button>
+    `;
+  }
+  return `<button type="button" data-board-idx="${index}" data-board-act="add-jd">Add JD</button>`;
+}
+
+function renderJobBoard() {
+  if (!els.boardResults) return;
+  const roles = state.boardRoles || [];
+  const filter = els.boardFilter?.value || 'shortlist';
+  const buckets = { shortlist: 0, below: 0, 'pass-recommended': 0, 'needs-jd': 0, passed: 0 };
+  const bucketOf = new Map();
+  for (const role of roles) {
+    const bucket = boardBucket(role);
+    bucketOf.set(role, bucket);
+    buckets[bucket] += 1;
+  }
+  let visible = roles.filter(role => {
+    const bucket = bucketOf.get(role);
+    if (filter === 'all') return bucket !== 'passed' && bucket !== 'needs-jd';
+    return bucket === filter;
+  });
+  const sort = els.boardSort?.value || 'score';
+  visible = visible.slice().sort((a, b) => {
+    if (sort === 'date') return String(b.reportDate || '').localeCompare(String(a.reportDate || ''));
+    if (sort === 'company') return String(a.company || '').localeCompare(String(b.company || ''));
+    return (Number.isFinite(b.score) ? b.score : -1) - (Number.isFinite(a.score) ? a.score : -1);
+  });
+  if (els.boardCount) {
+    els.boardCount.textContent = `${visible.length} shown · ${buckets.shortlist} shortlist · ${buckets.below} below · ${buckets['pass-recommended']} pass-recommended · ${buckets['needs-jd']} need JD · ${buckets.passed} passed`;
+  }
+  state.boardVisible = visible;
+  els.boardResults.innerHTML = visible.length ? `
+    <div class="board-grid">
+      ${visible.map((role, index) => {
+        const bucket = bucketOf.get(role);
+        const parsedTitle = scanCompanyRole(role.title);
+        const scanDate = String(role.reportDate || '').replace('T', ' ').replace(/-\d{3}Z$/, '').replace(/(\d{2})-(\d{2})-(\d{2})$/, '$1:$2');
+        const score = Number.isFinite(role.score) ? role.score : null;
+        const jdJob = bucket === 'needs-jd' ? jdJobForRole(role) : null;
+        const cardTone = jdJob?.status === 'error' ? 'jd-error' : (jdJob ? 'jd-active' : scanTone(role));
+        return `
+        <article class="board-card tone-${cardTone}">
+          <div class="board-card-top">
+            <span class="board-date">${escapeHtml(scanDate)}${role.timesSeen > 1 ? ` · ${role.timesSeen} scans` : ''}</span>
+            <span class="board-score">${score == null ? 'Needs JD' : `${score}/100`}</span>
+          </div>
+          <h3 class="board-title">${escapeHtml(role.role || parsedTitle.role || role.title)}</h3>
+          <p class="board-company">${escapeHtml(role.company || parsedTitle.company || 'Company not parsed')}</p>
+          <div class="chip-row">
+            <span>${escapeHtml(role.comp || 'Comp not stated')}</span>
+            <span>${escapeHtml(role.location || 'Location not stated')}</span>
+          </div>
+          ${jdJobStatusLine(jdJob)}
+          <div class="scan-actions board-actions">
+            ${role.link ? `<a href="${escapeHtml(role.link)}" target="_blank" rel="noreferrer">Open</a>` : ''}
+            ${bucket === 'passed'
+              ? `<button type="button" data-board-idx="${index}" data-board-act="restore">Restore</button>`
+              : `
+                ${bucket === 'needs-jd' ? jdActionButtons(jdJob, index) : ''}
+                <button type="button" data-board-idx="${index}" data-board-act="package">Package</button>
+                <button class="scan-dismiss" type="button" data-board-idx="${index}" data-board-act="pass">Pass</button>
+              `}
+          </div>
+        </article>
+      `;}).join('')}
+    </div>
+  ` : `<div class="empty-mini">Nothing in this bucket yet. Run a scan, or switch the filter above.</div>`;
+}
+
+async function pollJdJobs() {
+  let data;
+  try {
+    data = await api('/api/jd-jobs');
+  } catch {
+    return false;
+  }
+  const jobs = data.jobs || [];
+  const seen = new Set(jobs.map(job => job.identity));
+  let completed = false;
+  for (const [identity, prev] of state.jdJobs) {
+    if (!seen.has(identity) && (prev.status === 'queued' || prev.status === 'running')) completed = true;
+  }
+  state.jdJobs = new Map(jobs.map(job => [job.identity, job]));
+  if (completed) await loadJobBoard();
+  else renderJobBoard();
+  return jobs.some(job => job.status === 'queued' || job.status === 'running');
+}
+
+function scheduleJdJobsPoll() {
+  if (state.jdJobsPoller) return;
+  state.jdJobsPoller = setInterval(async () => {
+    if (!(await pollJdJobs())) {
+      clearInterval(state.jdJobsPoller);
+      state.jdJobsPoller = null;
+    }
+  }, 2500);
+}
+
+function openAddJdPanel(role) {
+  const parsed = scanCompanyRole(role.title);
+  state.addJdRole = role;
+  if (els.addJdTitle) els.addJdTitle.textContent = `Add job description - ${role.role || parsed.role || role.title || 'role'}`;
+  if (els.jdCompany) els.jdCompany.value = role.company || parsed.company || '';
+  if (els.jdRole) els.jdRole.value = role.role || parsed.role || role.title || '';
+  if (els.jdText) els.jdText.value = '';
+  if (els.addJdError) {
+    els.addJdError.hidden = true;
+    els.addJdError.textContent = '';
+  }
+  els.addJdDialog?.showModal();
+}
+
+async function handleBoardAction(action, role) {
+  const pseudoResult = { reportFile: role.reportFile || '' };
+  if (action === 'pass' || action === 'restore') {
+    await saveScanDecision(role, pseudoResult, action === 'pass' ? 'passed' : 'shortlisted', `${action === 'pass' ? 'Passed' : 'Restored'} from the job board`);
+    await loadJobBoard();
+    return;
+  }
+  if (action === 'add-jd') {
+    openAddJdPanel(role);
+    return;
+  }
+  if (action === 'retry-jd') {
+    const job = jdJobForRole(role);
+    if (!job) return;
+    try {
+      const result = await api('/api/score-jd/retry', {
+        method: 'POST',
+        body: JSON.stringify({ identity: job.identity }),
+      });
+      if (result.job) state.jdJobs.set(result.job.identity, result.job);
+      scheduleJdJobsPoll();
+      renderJobBoard();
+      showToast('Retrying in the background');
+    } catch (err) {
+      showToast(apiErrorMessage(err.message) || 'Could not retry.');
+    }
+    return;
+  }
+  if (action === 'package') {
+    const parsed = scanCompanyRole(role.title);
+    activateView('resume');
+    els.tailorCompany.value = role.company || parsed.company;
+    els.tailorRole.value = role.role || parsed.role;
+    els.tailorJd.focus();
+    updateTailorState();
+    showToast('Paste the JD, then tailor the package');
+  }
+}
+
+async function loadJobBoard() {
+  if (!els.boardResults) return;
+  try {
+    const data = await api('/api/board');
+    state.boardRoles = data.roles || [];
+    renderJobBoard();
+    if (await pollJdJobs()) scheduleJdJobsPoll();
+  } catch (err) {
+    els.boardResults.innerHTML = `<div class="empty-mini">${escapeHtml(apiErrorMessage(err.message) || 'Could not load the job board.')}</div>`;
+  }
 }
 
 function scanDisplayLooksLikeProse(value = '') {
@@ -2535,6 +2763,7 @@ function activateView(view) {
   const titles = {
     applications: ['Applications', 'Career Command Center'],
     scans: ['Scans', 'Opportunity Scanner'],
+    board: ['Job Board', 'Scored Roles'],
     capture: ['Capture', 'Outside Activity'],
     resume: ['Resume Studio', 'Resume Studio'],
     learning: ['Learning Insights', 'Search Learning'],
@@ -2551,6 +2780,7 @@ function activateView(view) {
   els.viewEyebrow.textContent = titles[nextView][0];
   els.viewTitle.textContent = titles[nextView][1];
   els.chatContext.textContent = `Context: ${titles[nextView][0]}`;
+  if (nextView === 'board') loadJobBoard();
 }
 
 async function refreshFilesOnly() {
@@ -3010,6 +3240,57 @@ els.themeToggle.addEventListener('click', () => {
   document.body.classList.toggle('dark');
   localStorage.setItem('theme', document.body.classList.contains('dark') ? 'dark' : 'light');
   updateThemeToggle();
+});
+
+els.boardFilter?.addEventListener('change', renderJobBoard);
+els.boardSort?.addEventListener('change', renderJobBoard);
+els.boardRefreshBtn?.addEventListener('click', () => loadJobBoard());
+els.boardResults?.addEventListener('click', async (event) => {
+  const button = event.target.closest?.('[data-board-act]');
+  if (!button) return;
+  const role = state.boardVisible[Number(button.dataset.boardIdx)];
+  if (!role) return;
+  await handleBoardAction(button.dataset.boardAct, role);
+});
+els.addJdCancel?.addEventListener('click', () => els.addJdDialog?.close());
+els.addJdForm?.addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const role = state.addJdRole;
+  const jdText = els.jdText?.value.trim() || '';
+  if (jdText.length < 120) {
+    if (els.addJdError) {
+      els.addJdError.hidden = false;
+      els.addJdError.textContent = 'Paste the full job description - that is too short to score.';
+    }
+    return;
+  }
+  try {
+    const res = await fetch('/api/score-jd', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: headers({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({
+        jdText,
+        company: els.jdCompany?.value.trim() || '',
+        role: els.jdRole?.value.trim() || '',
+        url: role?.link || '',
+      }),
+    });
+    const raw = await res.text();
+    if (!res.ok) throw new Error(apiErrorMessage(raw));
+    let payload;
+    try { payload = JSON.parse(raw); } catch { payload = {}; }
+    if (payload.job) state.jdJobs.set(payload.job.identity, payload.job);
+    scheduleJdJobsPoll();
+    renderJobBoard();
+    els.addJdDialog?.close();
+    showToast('Scoring started in the background');
+  } catch (err) {
+    if (els.addJdError) {
+      els.addJdError.hidden = false;
+      els.addJdError.textContent = apiErrorMessage(err.message);
+    }
+  }
 });
 
 $$('.nav-item').forEach(btn => btn.addEventListener('click', () => activateView(btn.dataset.view)));

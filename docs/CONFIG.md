@@ -71,6 +71,7 @@ Quick Scan and Verified Scan read exclude keywords and automatic-rejection phras
 | `SUITOR_WEBSEARCH_DELAY_MS` | Delay between web-search requests |
 | `SUITOR_VERIFIED_SCAN_LIMIT` | Max verified scan candidates |
 | `SUITOR_VERIFY_FETCH_CONCURRENCY` | Verified scan fetch concurrency |
+| `SUITOR_JD_SCORING_SCRIPT` | Test-only override for Add JD. Points `POST /api/score-jd` at a stub instead of `scripts/verified_scan.mjs`. Never set in production. |
 
 ## LinkedIn Browser
 

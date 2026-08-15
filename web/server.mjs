@@ -7,8 +7,8 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, wri
 import { networkInterfaces } from 'os';
 import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
-import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
+import { identityKeyFor, openJobDb } from './job_db.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
 
@@ -763,160 +763,8 @@ let jobDbSyncing = false;
 
 function jobDb() {
   if (jobDbHandle) return jobDbHandle;
-  mkdirSync(DATA_ROOT, { recursive: true });
-  const db = new DatabaseSync(JOB_DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
-  ensureJobDbSchema(db);
-  jobDbHandle = db;
+  jobDbHandle = openJobDb(JOB_DB_PATH);
   return jobDbHandle;
-}
-
-function ensureJobDbSchema(db) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS jobs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      compensation TEXT NOT NULL DEFAULT '',
-      score REAL,
-      score_breakdown TEXT NOT NULL DEFAULT '',
-      jd_text TEXT NOT NULL DEFAULT '',
-      first_seen_at TEXT NOT NULL DEFAULT '',
-      last_seen_at TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      UNIQUE(normalized_company, normalized_role, normalized_url)
-    );
-
-    CREATE TABLE IF NOT EXISTS applications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      job_id INTEGER,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT '',
-      section TEXT NOT NULL DEFAULT '',
-      date_found TEXT NOT NULL DEFAULT '',
-      date_submitted TEXT NOT NULL DEFAULT '',
-      date_rejected TEXT NOT NULL DEFAULT '',
-      follow_up_date TEXT NOT NULL DEFAULT '',
-      score REAL,
-      score_text TEXT NOT NULL DEFAULT '',
-      compensation TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      materials_path TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      next_action TEXT NOT NULL DEFAULT '',
-      score_breakdown TEXT NOT NULL DEFAULT '',
-      score_date TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      UNIQUE(normalized_company, normalized_role)
-    );
-
-    CREATE TABLE IF NOT EXISTS scan_decisions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key TEXT NOT NULL UNIQUE,
-      aliases_json TEXT NOT NULL DEFAULT '[]',
-      decision TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      report_file TEXT NOT NULL DEFAULT '',
-      reason TEXT NOT NULL DEFAULT '',
-      score REAL,
-      comp TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      decided_at TEXT NOT NULL DEFAULT '',
-      decided_by TEXT NOT NULL DEFAULT '',
-      synthetic INTEGER NOT NULL DEFAULT 0,
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS application_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      event_type TEXT NOT NULL DEFAULT '',
-      event_at TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      payload_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS interviews (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      round_type TEXT NOT NULL DEFAULT '',
-      interview_at TEXT NOT NULL DEFAULT '',
-      interviewers TEXT NOT NULL DEFAULT '',
-      prep_notes TEXT NOT NULL DEFAULT '',
-      outcome TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS contacts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      name TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      company TEXT NOT NULL DEFAULT '',
-      email TEXT NOT NULL DEFAULT '',
-      phone TEXT NOT NULL DEFAULT '',
-      linkedin_url TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS captures (
-      id TEXT PRIMARY KEY,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      jd_text TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      deleted_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
-    CREATE INDEX IF NOT EXISTS idx_applications_identity ON applications(normalized_company, normalized_role);
-    CREATE INDEX IF NOT EXISTS idx_scan_decisions_decision ON scan_decisions(decision);
-    CREATE INDEX IF NOT EXISTS idx_scan_decisions_identity ON scan_decisions(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_application_events_application ON application_events(application_id, event_at);
-    CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id, interview_at);
-    CREATE INDEX IF NOT EXISTS idx_contacts_application ON contacts(application_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_captures_identity ON captures(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_captures_active ON captures(deleted_at, updated_at);
-  `);
-  try { db.prepare('ALTER TABLE interviews ADD COLUMN company TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  try { db.prepare('ALTER TABLE interviews ADD COLUMN role TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', '3');
 }
 
 function dbText(value = '') {
@@ -1569,6 +1417,11 @@ function dbNumber(value) {
   return Number.isFinite(numeric) ? numeric : null;
 }
 
+function dbScore(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return dbNumber(value);
+}
+
 function dbIdentity(value = '') {
   return normalizeTrackerMatch(value);
 }
@@ -1825,7 +1678,7 @@ function dbApplicationToCard(row = {}) {
       'Next action': row.next_action || row.notes || '',
       Notes: row.notes || '',
     },
-    score: dbNumber(row.score),
+    score: dbScore(row.score),
     scoreBreakdown: row.score_breakdown || row.notes || '',
     scoreDate: row.score_date || dateText,
   };
@@ -1897,7 +1750,7 @@ function normalizeScanDecisionRecord(item = {}) {
     source: dbText(item.source),
     reportFile,
     reason: dbText(item.reason),
-    score: dbNumber(item.score),
+    score: dbScore(item.score),
     comp: dbText(item.comp || item.compensation),
     location: dbText(item.location),
     decidedAt: dbText(item.decidedAt || item.decided_at),
@@ -1981,7 +1834,7 @@ function dbScanDecisionRecords() {
     source: row.source,
     reportFile: row.report_file,
     reason: row.reason,
-    score: dbNumber(row.score),
+    score: dbScore(row.score),
     comp: row.comp,
     location: row.location,
     decidedAt: row.decided_at,
@@ -4051,6 +3904,109 @@ function streamSimpleAssistant(userMessage, assistantMessage, res) {
   res.end();
 }
 
+const BOARD_ROW_LIMIT = 3000;
+
+function loadBoardRows(db) {
+  const rows = db.prepare(`
+    SELECT company, role, title, url, source, location, compensation, score,
+           score_breakdown, report_file, recommended_action, apply_type,
+           verification, first_seen_at, last_seen_at, scored_at
+    FROM jobs
+    ORDER BY (score IS NULL), score DESC, scored_at DESC
+    LIMIT ?
+  `).all(BOARD_ROW_LIMIT);
+  const totalRows = Number(db.prepare('SELECT COUNT(*) AS total FROM jobs').get()?.total || 0);
+  const byRole = new Map();
+  for (const row of rows) {
+    const identity = identityKeyFor(row.company, row.role);
+    const key = identity === '::' ? (dbUrlIdentity(row.url) || `row-${row.url}`) : identity;
+    const existing = byRole.get(key);
+    if (!existing) { byRole.set(key, { ...row, timesSeen: 1 }); continue; }
+    existing.timesSeen += 1;
+    const best = existing.score == null ? -1 : Number(existing.score);
+    const next = row.score == null ? -1 : Number(row.score);
+    if (next > best) byRole.set(key, { ...row, timesSeen: existing.timesSeen });
+  }
+  return { rows: [...byRole.values()], fetchedRows: rows.length, totalRows, rowLimit: BOARD_ROW_LIMIT };
+}
+
+const JD_JOB_CONCURRENCY = 2;
+const jdJobs = new Map();
+const jdJobQueue = [];
+let jdJobsRunning = 0;
+const JD_SCORING_SCRIPT = resolve(APP_ROOT, 'scripts', 'verified_scan.mjs');
+
+function jdJobSummary(job) {
+  return {
+    identity: job.identity,
+    company: job.company,
+    role: job.role,
+    url: job.url,
+    status: job.status,
+    error: job.error || '',
+    queuedAt: job.queuedAt,
+    startedAt: job.startedAt || '',
+    finishedAt: job.finishedAt || '',
+  };
+}
+
+function pumpJdJobQueue() {
+  while (jdJobsRunning < JD_JOB_CONCURRENCY && jdJobQueue.length) {
+    const identity = jdJobQueue.shift();
+    const job = jdJobs.get(identity);
+    if (!job || job.status !== 'queued') continue;
+    startJdJob(job);
+  }
+}
+
+function startJdJob(job) {
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  jdJobsRunning += 1;
+  const scriptPath = process.env.SUITOR_JD_SCORING_SCRIPT ? resolve(process.env.SUITOR_JD_SCORING_SCRIPT) : JD_SCORING_SCRIPT;
+  const args = [scriptPath, '--jd-file', job.jdPath];
+  if (job.company) args.push('--company', job.company);
+  if (job.role) args.push('--role', job.role);
+  if (job.url) args.push('--url', job.url.slice(0, 500));
+  let output = '';
+  const appendOutput = chunk => {
+    output = `${output}${chunk.toString()}`.slice(-8000);
+  };
+  const finish = code => {
+    jdJobsRunning -= 1;
+    job.finishedAt = new Date().toISOString();
+    if (code === 0) {
+      try { rmSync(job.jdPath, { force: true }); } catch {}
+      jdJobs.delete(job.identity);
+    } else {
+      job.status = 'error';
+      job.error = jdJobErrorMessage(output, code);
+    }
+    pumpJdJobQueue();
+  };
+  let child;
+  try {
+    child = spawn(process.execPath, args, { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    jdJobsRunning -= 1;
+    job.status = 'error';
+    job.error = `Could not start scoring: ${err.message || err}`;
+    job.finishedAt = new Date().toISOString();
+    pumpJdJobQueue();
+    return;
+  }
+  child.stdout.on('data', appendOutput);
+  child.stderr.on('data', appendOutput);
+  child.on('error', err => { output += `\n${err.message || err}`; });
+  child.on('close', finish);
+}
+
+function jdJobErrorMessage(output, code) {
+  const lines = String(output || '').split('\n').map(line => line.trim()).filter(Boolean);
+  const last = lines[lines.length - 1] || '';
+  return (last ? last.slice(0, 300) : '') || `Scoring failed (exit code ${code}).`;
+}
+
 async function handleApi(req, res, pathname) {
   if (!requireSameOriginForMutation(req, res)) return;
 
@@ -4354,7 +4310,7 @@ async function handleApi(req, res, pathname) {
     const trackerResult = upsertSubmittedApplication({
       company: finalCompany,
       role: finalRole,
-      score: body.score ?? null,
+      score: dbScore(body.score),
       dateSubmitted,
       materialsPath,
       source,
@@ -4375,7 +4331,7 @@ async function handleApi(req, res, pathname) {
       source,
       reportFile,
       reason: `Application submitted on ${dateSubmitted}; cleared from Scans.`,
-      score: body.score ?? null,
+      score: dbScore(body.score),
       comp: compensation,
       location,
       decidedAt: new Date().toISOString(),
@@ -4394,7 +4350,7 @@ async function handleApi(req, res, pathname) {
       type: 'applied',
       at: dateSubmitted,
       notes: body.notes || 'Application submitted.',
-      payload: { source, compensation, location, materialsPath, score: body.score ?? null },
+      payload: { source, compensation, location, materialsPath, score: dbScore(body.score) },
     });
     return send(res, 200, {
       ok: true,
@@ -4421,7 +4377,7 @@ async function handleApi(req, res, pathname) {
     const trackerResult = upsertRejectedApplication({
       company: finalCompany,
       role: finalRole,
-      score: body.score ?? null,
+      score: dbScore(body.score),
       dateRejected,
       source,
       compensation,
@@ -4441,7 +4397,7 @@ async function handleApi(req, res, pathname) {
       source,
       reportFile,
       reason: `Application rejected on ${dateRejected}; closed out in Applications.`,
-      score: body.score ?? null,
+      score: dbScore(body.score),
       comp: compensation,
       location,
       decidedAt: new Date().toISOString(),
@@ -4460,7 +4416,7 @@ async function handleApi(req, res, pathname) {
       type: 'rejected',
       at: dateRejected,
       notes: body.notes || body.reason || 'Rejected by employer.',
-      payload: { source, compensation, location, score: body.score ?? null },
+      payload: { source, compensation, location, score: dbScore(body.score) },
     });
     return send(res, 200, {
       ok: true,
@@ -4487,7 +4443,7 @@ async function handleApi(req, res, pathname) {
       company: finalCompany,
       role: finalRole,
       status: body.status || 'screen_scheduled',
-      score: body.score ?? null,
+      score: dbScore(body.score),
       interviewAt: body.interviewAt || body.interview_at || body.date || '',
       materialsPath,
       source,
@@ -4509,7 +4465,7 @@ async function handleApi(req, res, pathname) {
       source,
       reportFile,
       reason: `Application stage updated to ${finalStatus}; cleared from active Scans.`,
-      score: body.score ?? null,
+      score: dbScore(body.score),
       comp: compensation,
       location,
       decidedAt: new Date().toISOString(),
@@ -4528,7 +4484,7 @@ async function handleApi(req, res, pathname) {
       type: finalStatus,
       at: body.interviewAt || body.interview_at || body.date || new Date().toISOString(),
       notes: body.notes || body.reason || 'Stage updated.',
-      payload: { source, compensation, location, materialsPath, score: body.score ?? null },
+      payload: { source, compensation, location, materialsPath, score: dbScore(body.score) },
     });
     if (/(screen|interview|scheduled)/i.test(finalStatus)) {
       upsertInterviewEvent({
@@ -4818,7 +4774,7 @@ async function handleApi(req, res, pathname) {
       source: String(body.source || '').trim(),
       reportFile,
       reason: String(body.reason || '').trim(),
-      score: body.score ?? null,
+      score: dbScore(body.score),
       comp: String(body.comp || body.compensation || '').trim(),
       location: String(body.location || '').trim(),
       decidedAt: new Date().toISOString(),
@@ -4839,6 +4795,96 @@ async function handleApi(req, res, pathname) {
     const updatedState = readScanState();
     appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: `Saved scan decision: ${decision} - ${title || [role, company].filter(Boolean).join(' - ') || url}` });
     return send(res, 200, { ok: true, decision: entry, suppressedByTracker, scanState: updatedState });
+  }
+
+  if (pathname === '/api/board' && req.method === 'GET') {
+    const db = jobDb();
+    const { rows, fetchedRows, totalRows, rowLimit } = loadBoardRows(db);
+    return send(res, 200, {
+      roles: rows.map(row => {
+        const score = dbScore(row.score);
+        return {
+          title: row.title || [row.role, row.company].filter(Boolean).join(' - '),
+          company: row.company || '',
+          role: row.role || '',
+          link: row.url || '',
+          source: row.source || '',
+          location: row.location || '',
+          comp: row.compensation || '',
+          score,
+          scoreText: row.score_breakdown || '',
+          action: row.recommended_action || '',
+          applyType: row.apply_type || '',
+          verification: row.verification || '',
+          reportFile: row.report_file || '',
+          reportDate: row.scored_at || row.last_seen_at || row.first_seen_at || '',
+          needsDetails: score == null,
+          timesSeen: row.timesSeen,
+        };
+      }),
+      totalRows,
+      rowLimit,
+      truncated: totalRows > fetchedRows,
+    });
+  }
+
+  if (pathname === '/api/score-jd' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return send(res, 400, { error: 'Invalid JSON body.' });
+    }
+    const jdText = String(body.jdText || '').trim();
+    const company = String(body.company || '').trim().slice(0, 120);
+    const role = String(body.role || '').trim().slice(0, 160);
+    const url = String(body.url || '').trim();
+    if (jdText.length < 120) return send(res, 400, { error: 'Paste the full job description - that is too short to score.' });
+    if (jdText.length > 200000) return send(res, 400, { error: 'That job description is too large.' });
+    if (!company && !role) return send(res, 400, { error: 'Provide the company or the role this description belongs to.' });
+    if (url && !/^https?:\/\//i.test(url)) return send(res, 400, { error: 'Job URL must be an http(s) link.' });
+    const identity = identityKeyFor(company, role);
+    const existing = jdJobs.get(identity);
+    if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+      return send(res, 409, { error: `Already scoring ${role || company} in the background - give it a minute, or check the board card for progress.` });
+    }
+    if (existing?.status === 'error') { try { rmSync(existing.jdPath, { force: true }); } catch {} }
+    const jdPath = resolve(DATA_ROOT, `pasted-jd-${Date.now()}-${randomBytes(4).toString('hex')}.txt`);
+    writeTextAtomic(jdPath, jdText, { mode: 0o600 });
+    const job = {
+      identity, company, role, url, jdPath,
+      status: 'queued', error: '',
+      queuedAt: new Date().toISOString(), startedAt: '', finishedAt: '',
+    };
+    jdJobs.set(identity, job);
+    jdJobQueue.push(identity);
+    pumpJdJobQueue();
+    return send(res, 202, { ok: true, job: jdJobSummary(job) });
+  }
+
+  if (pathname === '/api/jd-jobs' && req.method === 'GET') {
+    return send(res, 200, { jobs: [...jdJobs.values()].map(jdJobSummary) });
+  }
+
+  if (pathname === '/api/score-jd/retry' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return send(res, 400, { error: 'Invalid JSON body.' });
+    }
+    const identity = String(body.identity || '').trim();
+    const job = jdJobs.get(identity);
+    if (!job || job.status !== 'error') return send(res, 404, { error: 'Nothing to retry for that role.' });
+    if (!existsSync(job.jdPath)) return send(res, 404, { error: 'The pasted job description is no longer available on this server - paste it again.' });
+    job.status = 'queued';
+    job.error = '';
+    job.queuedAt = new Date().toISOString();
+    job.startedAt = '';
+    job.finishedAt = '';
+    jdJobQueue.push(identity);
+    pumpJdJobQueue();
+    return send(res, 202, { ok: true, job: jdJobSummary(job) });
   }
 
   if (pathname === '/api/chat' && req.method === 'POST') {

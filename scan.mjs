@@ -32,6 +32,7 @@ import yaml from 'js-yaml';
 
 import { makeHttpCtx } from './providers/_http.mjs';
 import { isQuickReject, isSearchResultNoise, readProfileHardRejectPhrases } from './scripts/scan_quality_filters.mjs';
+import { openJobDb, scoredUrlKeys } from './web/job_db.mjs';
 
 const parseYaml = yaml.load;
 
@@ -167,17 +168,35 @@ function buildLocationFilter(locationFilter) {
 
 // ── Dedup ───────────────────────────────────────────────────────────
 
-function loadSeenUrls() {
+export function loadSeenUrlKeys(dbPath, historyPath) {
   const seen = new Set();
-
-  // scan-history.tsv
-  if (existsSync(SCAN_HISTORY_PATH)) {
-    const lines = readFileSync(SCAN_HISTORY_PATH, 'utf-8').split('\n');
-    for (const line of lines.slice(1)) { // skip header
-      const url = line.split('\t')[0];
-      if (url) seen.add(url);
+  try {
+    const db = openJobDb(dbPath);
+    let keys;
+    try {
+      keys = scoredUrlKeys(db);
+    } finally {
+      db.close();
+    }
+    // openJobDb() creates a missing file, so zero rows must fall back to
+    // scan-history.tsv. Otherwise a deleted or not-yet-backfilled database
+    // silently re-scores everything.
+    if (!keys.size) throw new Error('job database has no scored roles yet');
+    for (const key of keys) seen.add(key);
+  } catch {
+    if (existsSync(historyPath)) {
+      const lines = readFileSync(historyPath, 'utf-8').split('\n');
+      for (const line of lines.slice(1)) {
+        const url = line.split('\t')[0];
+        if (url) seen.add(url);
+      }
     }
   }
+  return seen;
+}
+
+function loadSeenUrls() {
+  const seen = loadSeenUrlKeys(path.resolve(DATA_ROOT, 'suitor.sqlite'), SCAN_HISTORY_PATH);
 
   // pipeline.md — extract URLs from checkbox lines
   if (existsSync(PIPELINE_PATH)) {
@@ -608,7 +627,9 @@ async function main() {
 
 }
 
-main().catch(err => {
-  console.error('Fatal:', err.message);
-  process.exit(1);
-});
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(err => {
+    console.error('Fatal:', err.message);
+    process.exit(1);
+  });
+}
