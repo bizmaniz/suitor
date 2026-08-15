@@ -36,7 +36,10 @@
   "author": "Bizmaniz",
   "license": "MIT",
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.13.0"
+  },
+  "overrides": {
+    "undici": "^6.27.0"
   },
   "dependencies": {
     "@cursor/sdk": "^1.0.28",
