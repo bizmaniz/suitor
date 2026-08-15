@@ -7,7 +7,7 @@
 
 Suitor is a local-first job-search assistant. It helps you build a candidate profile, scan job sources, draft tailored application materials, and track applications, rejections, interviews, and offers in a local SQLite database.
 
-Suitor runs on your machine. There is no hosted Suitor service, no telemetry, and no account with us. Your assistant runs through your own Codex CLI or Claude Code CLI login.
+Suitor runs on your machine. There is no hosted Suitor service, no telemetry, and no account with us. Your assistant runs through your own Codex CLI, Claude Code CLI, or Cursor account.
 
 ## Highlights
 
@@ -23,9 +23,9 @@ Suitor runs on your machine. There is no hosted Suitor service, no telemetry, an
 
 Requirements:
 
-- [Node.js 22.5 or newer](https://nodejs.org/en/download)
+- [Node.js 22.13 or newer](https://nodejs.org/en/download)
 - Git
-- One local AI CLI: OpenAI Codex (`codex`) or Anthropic Claude Code (`claude`)
+- One local AI account: OpenAI Codex (`codex`), Anthropic Claude Code (`claude`), or a [Cursor API key](https://cursor.com/dashboard/integrations)
 
 Confirm Node and npm are available before cloning:
 
@@ -90,8 +90,8 @@ Existing profiles migrate automatically. Back up the profile database from Setti
 
 The wizard walks through:
 
-1. Environment check for Node, Codex, and Claude.
-2. LLM choice: ChatGPT via Codex or Claude via Claude Code.
+1. Environment check for Node, Codex, Claude, and Cursor.
+2. LLM choice: ChatGPT via Codex, Claude via Claude Code, or Cursor.
 3. Assistant name.
 4. A staged recruiter interview that asks for evidence, constraints, tradeoffs, energizers, drainers, and dealbreakers.
 5. Rich fallback form sections if you would rather paste structured notes than chat.
@@ -116,7 +116,7 @@ Capture accepts pasted application emails and manually discovered roles without 
 - Local-only: profile, resume, scans, generated drafts, browser state, and SQLite database stay on your machine.
 - Localhost by default: the server binds to `127.0.0.1`. Non-loopback binding requires both `SUITOR_HOST` and the explicit `SUITOR_ALLOW_LAN=1` acknowledgement.
 - Trusted-network LAN mode: Suitor does not provide TLS. Set `SUITOR_ALLOWED_HOSTS` and expose it only on a network you trust.
-- No stored LLM keys: Suitor uses your local CLI authentication.
+- Codex and Claude use your local CLI login. Cursor stores a user API key in `provider-secrets.json` (not `suitor.config.json`); replace or remove it in Settings.
 - No stored LinkedIn password: LinkedIn uses a real browser session with manual login.
 - No auto-apply: Suitor scans and drafts. You confirm every application or message yourself.
 

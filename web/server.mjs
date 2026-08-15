@@ -7,10 +7,21 @@ import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, wri
 import { networkInterfaces } from 'os';
 import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
-import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
+import { deleteJdJob, identityKeyFor, listJdJobs, openJobDb, persistJdJob } from './job_db.mjs';
+import { streamCursorPrompt } from './cursor_agent.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import {
+  loadProviderSecrets,
+  saveProviderSecretsFile,
+  restrictPrivateFile,
+  cursorApiKeyFrom,
+  childEnvForCli,
+  childEnvForCursorScan,
+  nodeVersionAtLeast,
+} from './provider_secrets.mjs';
+import { collectCursorContext, formatCursorContextMarkdown } from './cursor_context.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -183,9 +194,52 @@ const AUTH_FAILURE_LIMIT = Number(process.env.SUITOR_AUTH_FAILURE_LIMIT || 5);
 const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS || 5 * 60 * 1000);
 const authFailures = new Map();
 
+// Provider API keys live in their own 0600 file under the runtime root, next
+// to the app token - never in suitor.config.json, which people copy around
+// when debugging.
+const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
+let providerSecretsUnreadable = '';
+
+function providerSecrets() {
+  const loaded = loadProviderSecrets(PROVIDER_SECRETS_PATH);
+  providerSecretsUnreadable = loaded.error || '';
+  if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+  return loaded.secrets;
+}
+
+function saveProviderSecrets(next) {
+  providerSecrets();
+  if (providerSecretsUnreadable) {
+    const err = new Error(`Refusing to overwrite ${PROVIDER_SECRETS_PATH} (${providerSecretsUnreadable}). Move or repair the file, then save again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  mkdirSync(DATA_ROOT, { recursive: true });
+  saveProviderSecretsFile(PROVIDER_SECRETS_PATH, next);
+  restrictPrivateFile(PROVIDER_SECRETS_PATH);
+}
+
+function cursorApiKey() {
+  return cursorApiKeyFrom(process.env, providerSecrets());
+}
+
+function cursorFromEnvironment() {
+  return Boolean(String(process.env.CURSOR_API_KEY || '').trim());
+}
+
+function cursorConfigured() {
+  return Boolean(cursorApiKey());
+}
+
+function cursorKeyHint() {
+  const key = cursorApiKey();
+  return key ? `${key.slice(0, 4)}…` : '';
+}
+
 function localClaudeEnv() {
   return {
-    ...process.env,
+    ...childEnvForCli(process.env, { provider: String(config.llm?.provider || '') }),
+    SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
     SUITOR_RUNTIME_ROOT: DATA_ROOT,
@@ -763,160 +817,8 @@ let jobDbSyncing = false;
 
 function jobDb() {
   if (jobDbHandle) return jobDbHandle;
-  mkdirSync(DATA_ROOT, { recursive: true });
-  const db = new DatabaseSync(JOB_DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
-  ensureJobDbSchema(db);
-  jobDbHandle = db;
+  jobDbHandle = openJobDb(JOB_DB_PATH);
   return jobDbHandle;
-}
-
-function ensureJobDbSchema(db) {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS meta (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS jobs (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      compensation TEXT NOT NULL DEFAULT '',
-      score REAL,
-      score_breakdown TEXT NOT NULL DEFAULT '',
-      jd_text TEXT NOT NULL DEFAULT '',
-      first_seen_at TEXT NOT NULL DEFAULT '',
-      last_seen_at TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      UNIQUE(normalized_company, normalized_role, normalized_url)
-    );
-
-    CREATE TABLE IF NOT EXISTS applications (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      job_id INTEGER,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      status TEXT NOT NULL DEFAULT '',
-      section TEXT NOT NULL DEFAULT '',
-      date_found TEXT NOT NULL DEFAULT '',
-      date_submitted TEXT NOT NULL DEFAULT '',
-      date_rejected TEXT NOT NULL DEFAULT '',
-      follow_up_date TEXT NOT NULL DEFAULT '',
-      score REAL,
-      score_text TEXT NOT NULL DEFAULT '',
-      compensation TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      materials_path TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      next_action TEXT NOT NULL DEFAULT '',
-      score_breakdown TEXT NOT NULL DEFAULT '',
-      score_date TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      UNIQUE(normalized_company, normalized_role)
-    );
-
-    CREATE TABLE IF NOT EXISTS scan_decisions (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      key TEXT NOT NULL UNIQUE,
-      aliases_json TEXT NOT NULL DEFAULT '[]',
-      decision TEXT NOT NULL DEFAULT '',
-      title TEXT NOT NULL DEFAULT '',
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      report_file TEXT NOT NULL DEFAULT '',
-      reason TEXT NOT NULL DEFAULT '',
-      score REAL,
-      comp TEXT NOT NULL DEFAULT '',
-      location TEXT NOT NULL DEFAULT '',
-      decided_at TEXT NOT NULL DEFAULT '',
-      decided_by TEXT NOT NULL DEFAULT '',
-      synthetic INTEGER NOT NULL DEFAULT 0,
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS application_events (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      event_type TEXT NOT NULL DEFAULT '',
-      event_at TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      payload_json TEXT NOT NULL DEFAULT '{}',
-      created_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS interviews (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      round_type TEXT NOT NULL DEFAULT '',
-      interview_at TEXT NOT NULL DEFAULT '',
-      interviewers TEXT NOT NULL DEFAULT '',
-      prep_notes TEXT NOT NULL DEFAULT '',
-      outcome TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS contacts (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      application_id INTEGER,
-      name TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      company TEXT NOT NULL DEFAULT '',
-      email TEXT NOT NULL DEFAULT '',
-      phone TEXT NOT NULL DEFAULT '',
-      linkedin_url TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE TABLE IF NOT EXISTS captures (
-      id TEXT PRIMARY KEY,
-      company TEXT NOT NULL DEFAULT '',
-      role TEXT NOT NULL DEFAULT '',
-      url TEXT NOT NULL DEFAULT '',
-      source TEXT NOT NULL DEFAULT '',
-      jd_text TEXT NOT NULL DEFAULT '',
-      notes TEXT NOT NULL DEFAULT '',
-      normalized_company TEXT NOT NULL DEFAULT '',
-      normalized_role TEXT NOT NULL DEFAULT '',
-      normalized_url TEXT NOT NULL DEFAULT '',
-      created_at TEXT NOT NULL DEFAULT '',
-      updated_at TEXT NOT NULL DEFAULT '',
-      deleted_at TEXT NOT NULL DEFAULT ''
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_jobs_identity ON jobs(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_applications_status ON applications(status);
-    CREATE INDEX IF NOT EXISTS idx_applications_identity ON applications(normalized_company, normalized_role);
-    CREATE INDEX IF NOT EXISTS idx_scan_decisions_decision ON scan_decisions(decision);
-    CREATE INDEX IF NOT EXISTS idx_scan_decisions_identity ON scan_decisions(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_application_events_application ON application_events(application_id, event_at);
-    CREATE INDEX IF NOT EXISTS idx_interviews_application ON interviews(application_id, interview_at);
-    CREATE INDEX IF NOT EXISTS idx_contacts_application ON contacts(application_id);
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_captures_identity ON captures(normalized_company, normalized_role, normalized_url);
-    CREATE INDEX IF NOT EXISTS idx_captures_active ON captures(deleted_at, updated_at);
-  `);
-  try { db.prepare('ALTER TABLE interviews ADD COLUMN company TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  try { db.prepare('ALTER TABLE interviews ADD COLUMN role TEXT NOT NULL DEFAULT ""').run(); } catch {}
-  db.prepare('INSERT INTO meta(key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value').run('schema_version', '3');
 }
 
 function dbText(value = '') {
@@ -1577,6 +1479,11 @@ function connectionStatus() {
 function dbNumber(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
+}
+
+function dbScore(value) {
+  if (value === null || value === undefined || value === '') return null;
+  return dbNumber(value);
 }
 
 function dbIdentity(value = '') {
@@ -3585,6 +3492,11 @@ ${recentHistory}
 
 Attached/uploaded files:
 ${attachmentLines}
+${String(config.llm?.provider || '').toLowerCase() === 'cursor' ? `\n${formatCursorContextMarkdown(collectCursorContext({
+    profilePaths: [docs.profile],
+    trackerPath: TRACKER_PATH,
+    attachments,
+  }))}` : ''}
 
 User request:
 ${message}`;
@@ -4061,6 +3973,211 @@ function streamSimpleAssistant(userMessage, assistantMessage, res) {
   res.end();
 }
 
+
+const BOARD_ROW_LIMIT = 3000;
+
+function loadBoardRows(db) {
+  const rows = db.prepare(`
+    SELECT company, role, title, url, source, location, compensation, score,
+           score_breakdown, report_file, recommended_action, apply_type,
+           verification, first_seen_at, last_seen_at, scored_at
+    FROM jobs
+    ORDER BY (score IS NULL), score DESC, scored_at DESC
+    LIMIT ?
+  `).all(BOARD_ROW_LIMIT);
+  const totalRows = Number(db.prepare('SELECT COUNT(*) AS total FROM jobs').get()?.total || 0);
+  const byRole = new Map();
+  for (const row of rows) {
+    const identity = identityKeyFor(row.company, row.role);
+    const key = identity === '::' ? (dbUrlIdentity(row.url) || `row-${row.url}`) : identity;
+    const existing = byRole.get(key);
+    if (!existing) { byRole.set(key, { ...row, timesSeen: 1 }); continue; }
+    existing.timesSeen += 1;
+    const best = existing.score == null ? -1 : Number(existing.score);
+    const next = row.score == null ? -1 : Number(row.score);
+    if (next > best) byRole.set(key, { ...row, timesSeen: existing.timesSeen });
+  }
+  return { rows: [...byRole.values()], fetchedRows: rows.length, totalRows, rowLimit: BOARD_ROW_LIMIT };
+}
+
+const JD_JOB_CONCURRENCY = 2;
+const jdJobs = new Map();
+const jdJobQueue = [];
+const jdChildren = new Set();
+let jdJobsRunning = 0;
+const JD_SCORING_SCRIPT = resolve(APP_ROOT, 'scripts', 'verified_scan.mjs');
+
+function jdJobSummary(job) {
+  return {
+    identity: job.identity,
+    company: job.company,
+    role: job.role,
+    url: job.url,
+    status: job.status,
+    error: job.error || '',
+    queuedAt: job.queuedAt,
+    startedAt: job.startedAt || '',
+    finishedAt: job.finishedAt || '',
+  };
+}
+
+function saveJdJob(job) {
+  try { persistJdJob(jobDb(), job); } catch (err) {
+    console.error(`Could not persist JD job ${job.identity}: ${err.message || err}`);
+  }
+}
+
+function forgetJdJob(identity) {
+  jdJobs.delete(identity);
+  try { deleteJdJob(jobDb(), identity); } catch {}
+}
+
+function pumpJdJobQueue() {
+  while (jdJobsRunning < JD_JOB_CONCURRENCY && jdJobQueue.length) {
+    const identity = jdJobQueue.shift();
+    const job = jdJobs.get(identity);
+    if (!job || job.status !== 'queued') continue;
+    startJdJob(job);
+  }
+}
+
+function startJdJob(job) {
+  job.status = 'running';
+  job.startedAt = new Date().toISOString();
+  job.error = '';
+  jdJobsRunning += 1;
+  const scriptPath = process.env.SUITOR_JD_SCORING_SCRIPT ? resolve(process.env.SUITOR_JD_SCORING_SCRIPT) : JD_SCORING_SCRIPT;
+  const args = [scriptPath, '--jd-file', job.jdPath];
+  if (job.company) args.push('--company', job.company);
+  if (job.role) args.push('--role', job.role);
+  if (job.url) args.push('--url', job.url.slice(0, 500));
+  let output = '';
+  const appendOutput = chunk => {
+    output = `${output}${chunk.toString()}`.slice(-12000);
+  };
+  const finish = code => {
+    jdJobsRunning -= 1;
+    job.pid = 0;
+    job.child = null;
+    job.finishedAt = new Date().toISOString();
+    if (code === 0) {
+      try { rmSync(job.jdPath, { force: true }); } catch {}
+      forgetJdJob(job.identity);
+    } else {
+      job.status = 'error';
+      job.error = jdJobErrorMessage(output, code);
+      saveJdJob(job);
+    }
+    pumpJdJobQueue();
+  };
+  const scoringEnv = childEnvForCursorScan(localClaudeEnv(), {
+    provider: String(config.llm?.provider || ''),
+    cursorKey: cursorApiKey(),
+  });
+  let child;
+  try {
+    child = spawn(process.execPath, args, { cwd: APP_ROOT, shell: false, env: scoringEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  } catch (err) {
+    jdJobsRunning -= 1;
+    job.status = 'error';
+    job.error = `Could not start scoring: ${err.message || err}`;
+    job.finishedAt = new Date().toISOString();
+    job.pid = 0;
+    saveJdJob(job);
+    pumpJdJobQueue();
+    return;
+  }
+  job.pid = child.pid || 0;
+  job.child = child;
+  jdChildren.add(child);
+  saveJdJob(job);
+  child.stdout.on('data', appendOutput);
+  child.stderr.on('data', appendOutput);
+  child.on('error', err => { output += `\n${err.message || err}`; });
+  child.on('close', (code) => {
+    jdChildren.delete(child);
+    finish(code);
+  });
+}
+
+function jdJobErrorMessage(output, code) {
+  const lines = String(output || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const ignore = /^(?:node\.js\s+v?\d|usage:|v\d+\.\d+\.\d+$)/i;
+  const useful = lines.filter(line => !ignore.test(line));
+  const last = (useful.length ? useful : lines).slice(-4).join(' ').slice(0, 400);
+  return last || `Scoring failed (exit code ${code}).`;
+}
+
+function killJdChildren() {
+  for (const child of [...jdChildren]) {
+    try { child.kill('SIGTERM'); } catch {}
+    jdChildren.delete(child);
+  }
+}
+
+function persistLiveJdJobs(runningAs = 'queued') {
+  for (const job of jdJobs.values()) {
+    if (job.status === 'running') {
+      job.status = runningAs;
+      job.startedAt = '';
+      job.pid = 0;
+      job.child = null;
+    }
+    if (job.status === 'queued' || job.status === 'error') saveJdJob(job);
+  }
+}
+
+function shutdownJdQueue() {
+  killJdChildren();
+  persistLiveJdJobs('queued');
+}
+
+function recoverJdQueue() {
+  let rows = [];
+  try { rows = listJdJobs(jobDb()); } catch (err) {
+    console.error(`Could not recover JD queue: ${err.message || err}`);
+    return;
+  }
+  const referenced = new Set();
+  for (const row of rows) {
+    const jdPath = String(row.jd_path || '');
+    if (jdPath) referenced.add(resolve(jdPath));
+    if (row.pid) {
+      try { process.kill(row.pid, 'SIGTERM'); } catch {}
+    }
+    if (!jdPath || !existsSync(jdPath)) {
+      try { deleteJdJob(jobDb(), row.identity); } catch {}
+      continue;
+    }
+    const job = {
+      identity: row.identity,
+      company: row.company || '',
+      role: row.role || '',
+      url: row.url || '',
+      jdPath,
+      status: row.status === 'error' ? 'error' : 'queued',
+      error: row.status === 'error' ? (row.error || '') : '',
+      queuedAt: row.queued_at || new Date().toISOString(),
+      startedAt: '',
+      finishedAt: row.status === 'error' ? (row.finished_at || '') : '',
+      pid: 0,
+    };
+    jdJobs.set(job.identity, job);
+    if (job.status === 'queued') jdJobQueue.push(job.identity);
+    saveJdJob(job);
+  }
+  try {
+    for (const name of readdirSync(DATA_ROOT)) {
+      if (!name.startsWith('pasted-jd-')) continue;
+      const full = resolve(DATA_ROOT, name);
+      if (!referenced.has(full)) {
+        try { rmSync(full, { force: true }); } catch {}
+      }
+    }
+  } catch {}
+  pumpJdJobQueue();
+}
+
 async function handleApi(req, res, pathname) {
   if (!requireSameOriginForMutation(req, res)) return;
 
@@ -4126,12 +4243,54 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/env-check' && req.method === 'GET') {
     return send(res, 200, {
-      node: { version: process.version, ok: Number(process.versions.node.split('.')[0]) >= 22 },
+      node: { version: process.version, ok: nodeVersionAtLeast(process.versions.node, '22.13.0') },
       codex: detectCli('codex'),
       claude: detectCli('claude'),
+      cursor: {
+        configured: cursorConfigured(),
+        fromEnvironment: cursorFromEnvironment(),
+        hint: cursorKeyHint(),
+      },
       configPath: config.configPath,
       profileRoot: PROFILE_ROOT,
       runtimeRoot: DATA_ROOT,
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    if (body.apiKey !== undefined && (typeof body.apiKey !== 'string' || body.apiKey.length > 400)) {
+      return send(res, 400, { error: 'apiKey must be a string of at most 400 characters.' });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.cursor || {};
+    const apiKey = String(body.apiKey || '').trim() || String(current.apiKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.cursor;
+    } else if (apiKey) {
+      secrets.cursor = { apiKey };
+    } else {
+      delete secrets.cursor;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
     });
   }
 
@@ -4852,12 +5011,110 @@ async function handleApi(req, res, pathname) {
     return send(res, 200, { ok: true, decision: entry, suppressedByTracker, scanState: updatedState });
   }
 
+
+  if (pathname === '/api/board' && req.method === 'GET') {
+    const db = jobDb();
+    const { rows, fetchedRows, totalRows, rowLimit } = loadBoardRows(db);
+    return send(res, 200, {
+      roles: rows.map(row => {
+        const score = dbScore(row.score);
+        return {
+          title: row.title || [row.role, row.company].filter(Boolean).join(' - '),
+          company: row.company || '',
+          role: row.role || '',
+          link: row.url || '',
+          source: row.source || '',
+          location: row.location || '',
+          comp: row.compensation || '',
+          score,
+          scoreText: row.score_breakdown || '',
+          action: row.recommended_action || '',
+          applyType: row.apply_type || '',
+          verification: row.verification || '',
+          reportFile: row.report_file || '',
+          reportDate: row.scored_at || row.last_seen_at || row.first_seen_at || '',
+          needsDetails: score == null,
+          timesSeen: row.timesSeen,
+        };
+      }),
+      totalRows,
+      rowLimit,
+      truncated: totalRows > fetchedRows,
+    });
+  }
+
+  if (pathname === '/api/score-jd' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return send(res, 400, { error: 'Invalid JSON body.' });
+    }
+    const jdText = String(body.jdText || '').trim();
+    const company = String(body.company || '').trim().slice(0, 120);
+    const role = String(body.role || '').trim().slice(0, 160);
+    const url = String(body.url || '').trim();
+    if (jdText.length < 120) return send(res, 400, { error: 'Paste the full job description - that is too short to score.' });
+    if (jdText.length > 200000) return send(res, 400, { error: 'That job description is too large.' });
+    if (!company && !role) return send(res, 400, { error: 'Provide the company or the role this description belongs to.' });
+    if (url && !/^https?:\/\//i.test(url)) return send(res, 400, { error: 'Job URL must be an http(s) link.' });
+    const identity = identityKeyFor(company, role);
+    const existing = jdJobs.get(identity);
+    if (existing && (existing.status === 'queued' || existing.status === 'running')) {
+      return send(res, 409, { error: `Already scoring ${role || company} in the background - give it a minute, or check the board card for progress.` });
+    }
+    if (existing?.status === 'error') { try { rmSync(existing.jdPath, { force: true }); } catch {} }
+    const jdPath = resolve(DATA_ROOT, `pasted-jd-${Date.now()}-${randomBytes(4).toString('hex')}.txt`);
+    writeTextAtomic(jdPath, jdText, { mode: 0o600 });
+    const job = {
+      identity, company, role, url, jdPath,
+      status: 'queued', error: '',
+      queuedAt: new Date().toISOString(), startedAt: '', finishedAt: '',
+      pid: 0,
+    };
+    jdJobs.set(identity, job);
+    jdJobQueue.push(identity);
+    saveJdJob(job);
+    pumpJdJobQueue();
+    return send(res, 202, { ok: true, job: jdJobSummary(job) });
+  }
+
+  if (pathname === '/api/jd-jobs' && req.method === 'GET') {
+    return send(res, 200, { jobs: [...jdJobs.values()].map(jdJobSummary) });
+  }
+
+  if (pathname === '/api/score-jd/retry' && req.method === 'POST') {
+    let body;
+    try {
+      body = JSON.parse(await readBody(req) || '{}');
+    } catch {
+      return send(res, 400, { error: 'Invalid JSON body.' });
+    }
+    const identity = String(body.identity || '').trim();
+    const job = jdJobs.get(identity);
+    if (!job || job.status !== 'error') return send(res, 404, { error: 'Nothing to retry for that role.' });
+    if (!existsSync(job.jdPath)) return send(res, 404, { error: 'The pasted job description is no longer available on this server - paste it again.' });
+    job.status = 'queued';
+    job.error = '';
+    job.queuedAt = new Date().toISOString();
+    job.startedAt = '';
+    job.finishedAt = '';
+    job.pid = 0;
+    jdJobQueue.push(identity);
+    saveJdJob(job);
+    pumpJdJobQueue();
+    return send(res, 202, { ok: true, job: jdJobSummary(job) });
+  }
+
   if (pathname === '/api/chat' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req) || '{}');
     const message = String(body.message || '').trim();
     if (!message) return send(res, 400, { error: 'Message is required' });
     if (isVerifiedScanRequest(message)) return streamVerifiedScanChat(message, res);
     const prompt = buildAgentPrompt({ message, view: body.view, attachments: body.attachments });
+    if (config.llm?.provider === 'cursor') {
+      return streamCursor(prompt, res, { displayUserMessage: message, model: body.model });
+    }
     if ((config.llm?.provider || 'openai') === 'anthropic') {
       return streamClaude(prompt, res, { displayUserMessage: message });
     }
@@ -4928,6 +5185,38 @@ function streamHeaders(res) {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Accel-Buffering': 'no',
+  });
+}
+
+function streamCursor(message, res, options = {}) {
+  streamHeaders(res);
+  appendChatLog({ role: 'user', at: new Date().toISOString(), message: options.displayUserMessage || message });
+  setImmediate(async () => {
+    let assistantText = '';
+    try {
+      assistantText = await streamCursorPrompt({
+        prompt: message,
+        cwd: PROFILE_ROOT,
+        model: options.model || config.llm?.model,
+        apiKey: cursorApiKey(),
+        onText: chunk => res.write(chunk),
+      });
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: assistantText });
+      if (options.localEdit) {
+        const event = `\n\n[app-action] ${JSON.stringify(options.localEdit)}\n`;
+        assistantText += event;
+        res.write(event);
+      }
+      res.write('\n\n[process exited with code 0]\n');
+      res.end();
+    } catch (err) {
+      const text = `The Cursor assistant could not answer. ${err.message}\n`;
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message: assistantText || text });
+      if (!res.writableEnded) {
+        res.write(`${text}\n[process exited with code 1]\n`);
+        res.end();
+      }
+    }
   });
 }
 
@@ -5054,7 +5343,7 @@ function streamProcess(command, args, res) {
 function streamVerifiedScanReport(res) {
   streamHeaders(res);
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will direct-fetch shortlisted URLs, score them against the locked profile, and save the dated report.\n\n`);
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', chunk => {
@@ -5084,7 +5373,7 @@ function streamVerifiedScanReport(res) {
 function streamVerifiedScanChat(userMessage, res) {
   streamHeaders(res);
   appendChatLog({ role: 'user', at: new Date().toISOString(), message: userMessage });
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will save the dated scan report and return the shortlist here.\n\n`);
@@ -5116,6 +5405,10 @@ function streamTailorPackage(payload, res) {
   streamHeaders(res);
   setImmediate(() => {
     const stamp = Date.now();
+    if ((config.llm?.provider || 'openai') === 'cursor') {
+      // Cursor is selected for chat and scoring; this endpoint still writes
+      // files through the existing local package generator.
+    }
     const inputPath = packageInputPath('tailor', stamp);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
     appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
@@ -5335,6 +5628,16 @@ const server = createServer(async (req, res) => {
     send(res, err.statusCode || 500, { error: err.message });
   }
 });
+
+recoverJdQueue();
+
+function handleProcessExit() {
+  shutdownJdQueue();
+}
+
+process.on('SIGTERM', () => { handleProcessExit(); process.exit(0); });
+process.on('SIGINT', () => { handleProcessExit(); process.exit(0); });
+process.on('SIGHUP', () => { handleProcessExit(); process.exit(0); });
 
 server.listen(PORT, HOST, () => {
   console.log(`Suitor (${CANDIDATE_NAME}) web app listening on http://${HOST}:${PORT}`);

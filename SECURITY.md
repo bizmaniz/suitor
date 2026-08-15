@@ -22,7 +22,7 @@ Important boundaries:
 - In LAN mode, Suitor blocks user-controlled URL fetches to private, loopback, link-local, and metadata IP ranges and re-validates redirects.
 - Repeated failed authentication attempts are throttled.
 - The assistant reads untrusted job-posting text. Suitor frames that text as data, uses conservative CLI permissions, and runs the agent in the profile folder.
-- Suitor does not store LLM API keys, LinkedIn passwords, or job-board passwords.
+- Codex and Claude use local CLI login. Cursor may store a user API key in `provider-secrets.json` (Unix 0600 or a Windows user-only ACL), never in `suitor.config.json`. Suitor does not store LinkedIn or job-board passwords.
 - Suitor does not auto-submit applications or auto-send messages.
 
 ## Reporting

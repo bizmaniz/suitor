@@ -6,6 +6,7 @@ Suitor separates daily job-search work from profile knowledge and system control
 
 - **Applications** tracks active applications, interviews, offers, rejections, follow-ups, and notes.
 - **Scans** runs direct provider discovery and verified URL scoring. Durable pass and close-out decisions stay suppressed across later scans.
+- **Job Board** lists scored roles from the local SQLite `jobs` table (not markdown reports). Filter by shortlist, below threshold, pass-recommended, needs-JD, or passed. Needs-JD cards can paste a job description; scoring runs in the background and the card updates when it finishes.
 - **Capture** imports pasted application emails and saves roles found through referrals, recruiters, or outside research. It never connects to an inbox automatically.
 - **Resume Studio** stages a canonical master resume and creates profile-backed application packages.
 
