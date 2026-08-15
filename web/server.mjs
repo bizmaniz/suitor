@@ -289,7 +289,7 @@ function childEnvForAdzunaScan(baseEnv = localClaudeEnv()) {
 }
 
 function localClaudeEnv() {
-  return {
+  const env = {
     ...childEnvForCli(process.env, { provider: String(config.llm?.provider || '') }),
     SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
@@ -307,6 +307,9 @@ function localClaudeEnv() {
     OTEL_SDK_DISABLED: 'true',
     DO_NOT_TRACK: '1',
   };
+  delete env.ADZUNA_APP_ID;
+  delete env.ADZUNA_APP_KEY;
+  return env;
 }
 
 let pythonBinCache;
