@@ -10,7 +10,7 @@ import { spawn } from 'child_process';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join, resolve } from 'path';
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import { DatabaseSync } from 'node:sqlite';
 import { identityKey, openJobDb, upsertScoredRole } from '../web/job_db.mjs';
 import { delay, waitForSuitorServer } from './regression_server_wait.mjs';
@@ -42,13 +42,14 @@ const stubScoringScript = resolve(profileRoot, 'stub-verified-scan.mjs');
 writeFileSync(stubScoringScript, [
   `import { readFileSync } from 'fs';`,
   `import { resolve } from 'path';`,
-  `import { openJobDb, upsertScoredRole } from ${JSON.stringify(resolve(APP_ROOT, 'web', 'job_db.mjs'))};`,
+  `import { openJobDb, upsertScoredRole } from ${JSON.stringify(pathToFileURL(resolve(APP_ROOT, 'web', 'job_db.mjs')).href)};`,
   `function cliArg(name) { const i = process.argv.indexOf('--' + name); return i >= 0 ? process.argv[i + 1] : ''; }`,
   `async function main() {`,
   `  const text = readFileSync(cliArg('jd-file'), 'utf-8');`,
   `  const delayMatch = text.match(/STUB_DELAY_MS:(\\d+)/);`,
   `  if (delayMatch) await new Promise(r => setTimeout(r, Number(delayMatch[1])));`,
   `  if (text.includes('STUB_FAIL')) { console.error('stub scoring failure: STUB_FAIL marker present'); process.exit(1); }`,
+  `  if (text.includes('STUB_SAVE_FAIL')) { console.error('stub save failure: could not persist scored role'); process.exit(1); }`,
   `  const db = openJobDb(resolve(process.env.SUITOR_RUNTIME_ROOT, 'suitor.sqlite'));`,
   `  try {`,
   `    upsertScoredRole(db, { company: cliArg('company'), role: cliArg('role'), url: cliArg('url') || '', score: 77, scoreText: 'Role 20/25, Environment 15/20, Compensation 15/20, Lifestyle 10/15, Growth 8/10, Risk 9/10 = 77 (stub)' });`,
@@ -133,6 +134,7 @@ seedNeedsJdRole('Gamma Freight', 'Logistics Lead');
 seedNeedsJdRole('Delta Analytics', 'Data Lead');
 seedNeedsJdRole('Epsilon Health', 'Clinical Ops Lead');
 seedNeedsJdRole('Zeta Networks', 'Field Engineer');
+seedNeedsJdRole('Eta Labs', 'Research Lead');
 
 function spawnServer(port) {
   const server = spawn(process.execPath, ['web/server.mjs'], {
@@ -238,6 +240,16 @@ try {
   assertTrue(pastedJdFileCount() <= filesBeforeSupersede, 'superseding a failed job with a fresh paste should clean up the old temp file, not accumulate one per attempt', `before=${filesBeforeSupersede} after=${pastedJdFileCount()}`);
   console.log('PASS - C3: a fresh Add JD submission supersedes a previously-failed job and cleans up its now-unneeded temp file');
 
+  const filesBeforeSaveFail = pastedJdFileCount();
+  const saveFailSubmit = await scoreJd(token, port, { company: 'Eta Labs', role: 'Research Lead', jdText: longText('STUB_SAVE_FAIL') });
+  assert.equal(saveFailSubmit.res.status, 202, 'a submission that will fail to save should still be accepted at submit time', JSON.stringify(saveFailSubmit.body));
+  const [saveFailed] = await waitForJobs(token, port, jobs => jobs.some(j => j.company === 'Eta Labs' && j.status === 'error'), 10000, 'the Eta job to fail on save')
+    .then(jobs => jobs.filter(j => j.company === 'Eta Labs'));
+  assert.match(saveFailed.error, /could not persist scored role/, 'a save failure must surface the real persist error, not only a Node version');
+  assertTrue(pastedJdFileCount() > filesBeforeSaveFail, 'a save failure must keep the pasted JD on disk for retry');
+  console.log('PASS - C4: a DB save failure is reported as an error and keeps the pasted JD for retry');
+
+
   const zetaSubmit = await scoreJd(token, port, { company: 'Zeta Networks', role: 'Field Engineer', jdText: longText('STUB_DELAY_MS:6000') });
   assert.equal(zetaSubmit.res.status, 202, 'the Zeta submission should be accepted', JSON.stringify(zetaSubmit.body));
   await waitForJobs(token, port, jobs => jobs.some(j => j.company === 'Zeta Networks' && j.status === 'running'), 5000, 'the Zeta job to start running');
@@ -260,20 +272,14 @@ try {
   try {
     const secondToken = await waitForSuitorServer({ port: secondPort, tokenPath, child: second.server, getOutput: second.getOutput });
     const jobsOnFreshServer = await jobsFor(secondToken, secondPort);
-    assertTrue(!jobsOnFreshServer.some(j => j.company === 'Zeta Networks'), 'a job that was running when the OLD server process died must not reappear on a NEW server instance - this is the deliberate in-memory-only design, not a bug', JSON.stringify(jobsOnFreshServer));
-    console.log('PASS - D2: the in-flight job from the killed server does not appear on a freshly-started server (state is deliberately in-memory, not persisted)');
+    assertTrue(jobsOnFreshServer.some(j => j.company === 'Zeta Networks' && (j.status === 'queued' || j.status === 'running')), 'a job that was running when the OLD server died must come back on the NEW server from the persisted queue', JSON.stringify(jobsOnFreshServer));
+    console.log('PASS - D2: the in-flight job from the killed server is recovered on a freshly-started server (queue is restart-safe)');
 
-    const { body: boardOnFreshServer } = await api(secondToken, secondPort, '/api/board');
-    const zetaOnFreshServer = (boardOnFreshServer.roles || []).find(r => r.company === 'Zeta Networks' && r.role === 'Field Engineer');
-    assertTrue(Boolean(zetaOnFreshServer) && zetaOnFreshServer.score == null, 'the role must still read as a plain, unscored "needs JD" card on the new server - not stuck, not corrupted', JSON.stringify(zetaOnFreshServer));
-
-    const zetaResubmit = await scoreJd(secondToken, secondPort, { company: 'Zeta Networks', role: 'Field Engineer', jdText: longText('a clean resubmission after the restart') });
-    assert.equal(zetaResubmit.res.status, 202, 'resubmitting the same role on the new server must succeed normally - a restart must never leave a card permanently unable to be scored', JSON.stringify(zetaResubmit.body));
-    await waitForJobs(secondToken, secondPort, jobs => !jobs.find(j => j.company === 'Zeta Networks'), 10000, 'the post-restart Zeta resubmission to finish');
+    await waitForJobs(secondToken, secondPort, jobs => !jobs.find(j => j.company === 'Zeta Networks'), 15000, 'the recovered Zeta job to finish after restart');
     const { body: boardFinal } = await api(secondToken, secondPort, '/api/board');
     const zetaFinal = (boardFinal.roles || []).find(r => r.company === 'Zeta Networks' && r.role === 'Field Engineer');
-    assert.equal(zetaFinal?.score, 77, 'the resubmitted role should score normally, proving the card was never permanently stuck', JSON.stringify(zetaFinal));
-    console.log('PASS - D3: the role is a plain, resubmittable needs-JD card after the restart - never permanently stuck - and scores normally once resubmitted');
+    assert.equal(zetaFinal?.score, 77, 'the recovered job should score without the owner pasting the JD again', JSON.stringify(zetaFinal));
+    console.log('PASS - D3: after restart the recovered job finishes and persists its score without a fresh paste');
   } finally {
     await stopServer(second.server);
   }

@@ -170,6 +170,14 @@ function buildLocationFilter(locationFilter) {
 
 export function loadSeenUrlKeys(dbPath, historyPath) {
   const seen = new Set();
+  const addHistory = () => {
+    if (!existsSync(historyPath)) return;
+    const lines = readFileSync(historyPath, 'utf-8').replace(/^\uFEFF/, '').split(/\r?\n/);
+    for (const line of lines.slice(1)) {
+      const url = line.split('\t')[0].trim();
+      if (url) seen.add(url);
+    }
+  };
   try {
     const db = openJobDb(dbPath);
     let keys;
@@ -178,20 +186,13 @@ export function loadSeenUrlKeys(dbPath, historyPath) {
     } finally {
       db.close();
     }
-    // openJobDb() creates a missing file, so zero rows must fall back to
-    // scan-history.tsv. Otherwise a deleted or not-yet-backfilled database
-    // silently re-scores everything.
-    if (!keys.size) throw new Error('job database has no scored roles yet');
     for (const key of keys) seen.add(key);
   } catch {
-    if (existsSync(historyPath)) {
-      const lines = readFileSync(historyPath, 'utf-8').split('\n');
-      for (const line of lines.slice(1)) {
-        const url = line.split('\t')[0];
-        if (url) seen.add(url);
-      }
-    }
+    // Missing or unreadable DB still falls back to history below.
   }
+  // Always keep scan-history.tsv URLs. Once the DB has its first scored
+  // role, older history-only jobs must not reappear as new.
+  addHistory();
   return seen;
 }
 

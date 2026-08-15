@@ -8,9 +8,20 @@ import { networkInterfaces } from 'os';
 import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
-import { identityKeyFor, openJobDb } from './job_db.mjs';
+import { deleteJdJob, identityKeyFor, listJdJobs, openJobDb, persistJdJob } from './job_db.mjs';
+import { streamCursorPrompt } from './cursor_agent.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import {
+  loadProviderSecrets,
+  saveProviderSecretsFile,
+  restrictPrivateFile,
+  cursorApiKeyFrom,
+  childEnvForCli,
+  childEnvForCursorScan,
+  nodeVersionAtLeast,
+} from './provider_secrets.mjs';
+import { collectCursorContext, formatCursorContextMarkdown } from './cursor_context.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -183,9 +194,52 @@ const AUTH_FAILURE_LIMIT = Number(process.env.SUITOR_AUTH_FAILURE_LIMIT || 5);
 const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS || 5 * 60 * 1000);
 const authFailures = new Map();
 
+// Provider API keys live in their own 0600 file under the runtime root, next
+// to the app token - never in suitor.config.json, which people copy around
+// when debugging.
+const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
+let providerSecretsUnreadable = '';
+
+function providerSecrets() {
+  const loaded = loadProviderSecrets(PROVIDER_SECRETS_PATH);
+  providerSecretsUnreadable = loaded.error || '';
+  if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+  return loaded.secrets;
+}
+
+function saveProviderSecrets(next) {
+  providerSecrets();
+  if (providerSecretsUnreadable) {
+    const err = new Error(`Refusing to overwrite ${PROVIDER_SECRETS_PATH} (${providerSecretsUnreadable}). Move or repair the file, then save again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  mkdirSync(DATA_ROOT, { recursive: true });
+  saveProviderSecretsFile(PROVIDER_SECRETS_PATH, next);
+  restrictPrivateFile(PROVIDER_SECRETS_PATH);
+}
+
+function cursorApiKey() {
+  return cursorApiKeyFrom(process.env, providerSecrets());
+}
+
+function cursorFromEnvironment() {
+  return Boolean(String(process.env.CURSOR_API_KEY || '').trim());
+}
+
+function cursorConfigured() {
+  return Boolean(cursorApiKey());
+}
+
+function cursorKeyHint() {
+  const key = cursorApiKey();
+  return key ? `${key.slice(0, 4)}…` : '';
+}
+
 function localClaudeEnv() {
   return {
-    ...process.env,
+    ...childEnvForCli(process.env, { provider: String(config.llm?.provider || '') }),
+    SUITOR_LLM_PROVIDER: String(config.llm?.provider || ''),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
     SUITOR_RUNTIME_ROOT: DATA_ROOT,
@@ -1678,7 +1732,7 @@ function dbApplicationToCard(row = {}) {
       'Next action': row.next_action || row.notes || '',
       Notes: row.notes || '',
     },
-    score: dbScore(row.score),
+    score: dbNumber(row.score),
     scoreBreakdown: row.score_breakdown || row.notes || '',
     scoreDate: row.score_date || dateText,
   };
@@ -1750,7 +1804,7 @@ function normalizeScanDecisionRecord(item = {}) {
     source: dbText(item.source),
     reportFile,
     reason: dbText(item.reason),
-    score: dbScore(item.score),
+    score: dbNumber(item.score),
     comp: dbText(item.comp || item.compensation),
     location: dbText(item.location),
     decidedAt: dbText(item.decidedAt || item.decided_at),
@@ -1834,7 +1888,7 @@ function dbScanDecisionRecords() {
     source: row.source,
     reportFile: row.report_file,
     reason: row.reason,
-    score: dbScore(row.score),
+    score: dbNumber(row.score),
     comp: row.comp,
     location: row.location,
     decidedAt: row.decided_at,
@@ -3428,6 +3482,11 @@ ${recentHistory}
 
 Attached/uploaded files:
 ${attachmentLines}
+${String(config.llm?.provider || '').toLowerCase() === 'cursor' ? `\n${formatCursorContextMarkdown(collectCursorContext({
+    profilePaths: [docs.profile],
+    trackerPath: TRACKER_PATH,
+    attachments,
+  }))}` : ''}
 
 User request:
 ${message}`;
@@ -3904,6 +3963,7 @@ function streamSimpleAssistant(userMessage, assistantMessage, res) {
   res.end();
 }
 
+
 const BOARD_ROW_LIMIT = 3000;
 
 function loadBoardRows(db) {
@@ -3933,6 +3993,7 @@ function loadBoardRows(db) {
 const JD_JOB_CONCURRENCY = 2;
 const jdJobs = new Map();
 const jdJobQueue = [];
+const jdChildren = new Set();
 let jdJobsRunning = 0;
 const JD_SCORING_SCRIPT = resolve(APP_ROOT, 'scripts', 'verified_scan.mjs');
 
@@ -3950,6 +4011,17 @@ function jdJobSummary(job) {
   };
 }
 
+function saveJdJob(job) {
+  try { persistJdJob(jobDb(), job); } catch (err) {
+    console.error(`Could not persist JD job ${job.identity}: ${err.message || err}`);
+  }
+}
+
+function forgetJdJob(identity) {
+  jdJobs.delete(identity);
+  try { deleteJdJob(jobDb(), identity); } catch {}
+}
+
 function pumpJdJobQueue() {
   while (jdJobsRunning < JD_JOB_CONCURRENCY && jdJobQueue.length) {
     const identity = jdJobQueue.shift();
@@ -3962,6 +4034,7 @@ function pumpJdJobQueue() {
 function startJdJob(job) {
   job.status = 'running';
   job.startedAt = new Date().toISOString();
+  job.error = '';
   jdJobsRunning += 1;
   const scriptPath = process.env.SUITOR_JD_SCORING_SCRIPT ? resolve(process.env.SUITOR_JD_SCORING_SCRIPT) : JD_SCORING_SCRIPT;
   const args = [scriptPath, '--jd-file', job.jdPath];
@@ -3970,41 +4043,129 @@ function startJdJob(job) {
   if (job.url) args.push('--url', job.url.slice(0, 500));
   let output = '';
   const appendOutput = chunk => {
-    output = `${output}${chunk.toString()}`.slice(-8000);
+    output = `${output}${chunk.toString()}`.slice(-12000);
   };
   const finish = code => {
     jdJobsRunning -= 1;
+    job.pid = 0;
+    job.child = null;
     job.finishedAt = new Date().toISOString();
     if (code === 0) {
       try { rmSync(job.jdPath, { force: true }); } catch {}
-      jdJobs.delete(job.identity);
+      forgetJdJob(job.identity);
     } else {
       job.status = 'error';
       job.error = jdJobErrorMessage(output, code);
+      saveJdJob(job);
     }
     pumpJdJobQueue();
   };
+  const scoringEnv = childEnvForCursorScan(localClaudeEnv(), {
+    provider: String(config.llm?.provider || ''),
+    cursorKey: cursorApiKey(),
+  });
   let child;
   try {
-    child = spawn(process.execPath, args, { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+    child = spawn(process.execPath, args, { cwd: APP_ROOT, shell: false, env: scoringEnv, stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (err) {
     jdJobsRunning -= 1;
     job.status = 'error';
     job.error = `Could not start scoring: ${err.message || err}`;
     job.finishedAt = new Date().toISOString();
+    job.pid = 0;
+    saveJdJob(job);
     pumpJdJobQueue();
     return;
   }
+  job.pid = child.pid || 0;
+  job.child = child;
+  jdChildren.add(child);
+  saveJdJob(job);
   child.stdout.on('data', appendOutput);
   child.stderr.on('data', appendOutput);
   child.on('error', err => { output += `\n${err.message || err}`; });
-  child.on('close', finish);
+  child.on('close', (code) => {
+    jdChildren.delete(child);
+    finish(code);
+  });
 }
 
 function jdJobErrorMessage(output, code) {
-  const lines = String(output || '').split('\n').map(line => line.trim()).filter(Boolean);
-  const last = lines[lines.length - 1] || '';
-  return (last ? last.slice(0, 300) : '') || `Scoring failed (exit code ${code}).`;
+  const lines = String(output || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const ignore = /^(?:node\.js\s+v?\d|usage:|v\d+\.\d+\.\d+$)/i;
+  const useful = lines.filter(line => !ignore.test(line));
+  const last = (useful.length ? useful : lines).slice(-4).join(' ').slice(0, 400);
+  return last || `Scoring failed (exit code ${code}).`;
+}
+
+function killJdChildren() {
+  for (const child of [...jdChildren]) {
+    try { child.kill('SIGTERM'); } catch {}
+    jdChildren.delete(child);
+  }
+}
+
+function persistLiveJdJobs(runningAs = 'queued') {
+  for (const job of jdJobs.values()) {
+    if (job.status === 'running') {
+      job.status = runningAs;
+      job.startedAt = '';
+      job.pid = 0;
+      job.child = null;
+    }
+    if (job.status === 'queued' || job.status === 'error') saveJdJob(job);
+  }
+}
+
+function shutdownJdQueue() {
+  killJdChildren();
+  persistLiveJdJobs('queued');
+}
+
+function recoverJdQueue() {
+  let rows = [];
+  try { rows = listJdJobs(jobDb()); } catch (err) {
+    console.error(`Could not recover JD queue: ${err.message || err}`);
+    return;
+  }
+  const referenced = new Set();
+  for (const row of rows) {
+    const jdPath = String(row.jd_path || '');
+    if (jdPath) referenced.add(resolve(jdPath));
+    if (row.pid) {
+      try { process.kill(row.pid, 'SIGTERM'); } catch {}
+    }
+    if (!jdPath || !existsSync(jdPath)) {
+      try { deleteJdJob(jobDb(), row.identity); } catch {}
+      continue;
+    }
+    const job = {
+      identity: row.identity,
+      company: row.company || '',
+      role: row.role || '',
+      url: row.url || '',
+      jdPath,
+      status: row.status === 'error' ? 'error' : 'queued',
+      error: row.status === 'error' ? (row.error || '') : '',
+      queuedAt: row.queued_at || new Date().toISOString(),
+      startedAt: '',
+      finishedAt: row.status === 'error' ? (row.finished_at || '') : '',
+      pid: 0,
+    };
+    jdJobs.set(job.identity, job);
+    if (job.status === 'queued') jdJobQueue.push(job.identity);
+    saveJdJob(job);
+  }
+  try {
+    for (const name of readdirSync(DATA_ROOT)) {
+      if (!name.startsWith('pasted-jd-')) continue;
+      const full = resolve(DATA_ROOT, name);
+      if (!referenced.has(full)) {
+        try { rmSync(full, { force: true }); } catch {}
+      }
+    }
+  } catch {}
+  pumpJdJobQueue();
 }
 
 async function handleApi(req, res, pathname) {
@@ -4072,12 +4233,54 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/env-check' && req.method === 'GET') {
     return send(res, 200, {
-      node: { version: process.version, ok: Number(process.versions.node.split('.')[0]) >= 22 },
+      node: { version: process.version, ok: nodeVersionAtLeast(process.versions.node, '22.13.0') },
       codex: detectCli('codex'),
       claude: detectCli('claude'),
+      cursor: {
+        configured: cursorConfigured(),
+        fromEnvironment: cursorFromEnvironment(),
+        hint: cursorKeyHint(),
+      },
       configPath: config.configPath,
       profileRoot: PROFILE_ROOT,
       runtimeRoot: DATA_ROOT,
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
+    });
+  }
+
+  if (pathname === '/api/cursor' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    if (body.apiKey !== undefined && (typeof body.apiKey !== 'string' || body.apiKey.length > 400)) {
+      return send(res, 400, { error: 'apiKey must be a string of at most 400 characters.' });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.cursor || {};
+    const apiKey = String(body.apiKey || '').trim() || String(current.apiKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.cursor;
+    } else if (apiKey) {
+      secrets.cursor = { apiKey };
+    } else {
+      delete secrets.cursor;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    return send(res, 200, {
+      ok: true,
+      configured: cursorConfigured(),
+      fromEnvironment: cursorFromEnvironment(),
+      hint: cursorKeyHint(),
     });
   }
 
@@ -4310,7 +4513,7 @@ async function handleApi(req, res, pathname) {
     const trackerResult = upsertSubmittedApplication({
       company: finalCompany,
       role: finalRole,
-      score: dbScore(body.score),
+      score: body.score ?? null,
       dateSubmitted,
       materialsPath,
       source,
@@ -4331,7 +4534,7 @@ async function handleApi(req, res, pathname) {
       source,
       reportFile,
       reason: `Application submitted on ${dateSubmitted}; cleared from Scans.`,
-      score: dbScore(body.score),
+      score: body.score ?? null,
       comp: compensation,
       location,
       decidedAt: new Date().toISOString(),
@@ -4350,7 +4553,7 @@ async function handleApi(req, res, pathname) {
       type: 'applied',
       at: dateSubmitted,
       notes: body.notes || 'Application submitted.',
-      payload: { source, compensation, location, materialsPath, score: dbScore(body.score) },
+      payload: { source, compensation, location, materialsPath, score: body.score ?? null },
     });
     return send(res, 200, {
       ok: true,
@@ -4377,7 +4580,7 @@ async function handleApi(req, res, pathname) {
     const trackerResult = upsertRejectedApplication({
       company: finalCompany,
       role: finalRole,
-      score: dbScore(body.score),
+      score: body.score ?? null,
       dateRejected,
       source,
       compensation,
@@ -4397,7 +4600,7 @@ async function handleApi(req, res, pathname) {
       source,
       reportFile,
       reason: `Application rejected on ${dateRejected}; closed out in Applications.`,
-      score: dbScore(body.score),
+      score: body.score ?? null,
       comp: compensation,
       location,
       decidedAt: new Date().toISOString(),
@@ -4416,7 +4619,7 @@ async function handleApi(req, res, pathname) {
       type: 'rejected',
       at: dateRejected,
       notes: body.notes || body.reason || 'Rejected by employer.',
-      payload: { source, compensation, location, score: dbScore(body.score) },
+      payload: { source, compensation, location, score: body.score ?? null },
     });
     return send(res, 200, {
       ok: true,
@@ -4443,7 +4646,7 @@ async function handleApi(req, res, pathname) {
       company: finalCompany,
       role: finalRole,
       status: body.status || 'screen_scheduled',
-      score: dbScore(body.score),
+      score: body.score ?? null,
       interviewAt: body.interviewAt || body.interview_at || body.date || '',
       materialsPath,
       source,
@@ -4465,7 +4668,7 @@ async function handleApi(req, res, pathname) {
       source,
       reportFile,
       reason: `Application stage updated to ${finalStatus}; cleared from active Scans.`,
-      score: dbScore(body.score),
+      score: body.score ?? null,
       comp: compensation,
       location,
       decidedAt: new Date().toISOString(),
@@ -4484,7 +4687,7 @@ async function handleApi(req, res, pathname) {
       type: finalStatus,
       at: body.interviewAt || body.interview_at || body.date || new Date().toISOString(),
       notes: body.notes || body.reason || 'Stage updated.',
-      payload: { source, compensation, location, materialsPath, score: dbScore(body.score) },
+      payload: { source, compensation, location, materialsPath, score: body.score ?? null },
     });
     if (/(screen|interview|scheduled)/i.test(finalStatus)) {
       upsertInterviewEvent({
@@ -4774,7 +4977,7 @@ async function handleApi(req, res, pathname) {
       source: String(body.source || '').trim(),
       reportFile,
       reason: String(body.reason || '').trim(),
-      score: dbScore(body.score),
+      score: body.score ?? null,
       comp: String(body.comp || body.compensation || '').trim(),
       location: String(body.location || '').trim(),
       decidedAt: new Date().toISOString(),
@@ -4796,6 +4999,7 @@ async function handleApi(req, res, pathname) {
     appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: `Saved scan decision: ${decision} - ${title || [role, company].filter(Boolean).join(' - ') || url}` });
     return send(res, 200, { ok: true, decision: entry, suppressedByTracker, scanState: updatedState });
   }
+
 
   if (pathname === '/api/board' && req.method === 'GET') {
     const db = jobDb();
@@ -4855,9 +5059,11 @@ async function handleApi(req, res, pathname) {
       identity, company, role, url, jdPath,
       status: 'queued', error: '',
       queuedAt: new Date().toISOString(), startedAt: '', finishedAt: '',
+      pid: 0,
     };
     jdJobs.set(identity, job);
     jdJobQueue.push(identity);
+    saveJdJob(job);
     pumpJdJobQueue();
     return send(res, 202, { ok: true, job: jdJobSummary(job) });
   }
@@ -4882,7 +5088,9 @@ async function handleApi(req, res, pathname) {
     job.queuedAt = new Date().toISOString();
     job.startedAt = '';
     job.finishedAt = '';
+    job.pid = 0;
     jdJobQueue.push(identity);
+    saveJdJob(job);
     pumpJdJobQueue();
     return send(res, 202, { ok: true, job: jdJobSummary(job) });
   }
@@ -4893,6 +5101,9 @@ async function handleApi(req, res, pathname) {
     if (!message) return send(res, 400, { error: 'Message is required' });
     if (isVerifiedScanRequest(message)) return streamVerifiedScanChat(message, res);
     const prompt = buildAgentPrompt({ message, view: body.view, attachments: body.attachments });
+    if (config.llm?.provider === 'cursor') {
+      return streamCursor(prompt, res, { displayUserMessage: message, model: body.model });
+    }
     if ((config.llm?.provider || 'openai') === 'anthropic') {
       return streamClaude(prompt, res, { displayUserMessage: message });
     }
@@ -4963,6 +5174,38 @@ function streamHeaders(res) {
     'Content-Type': 'text/plain; charset=utf-8',
     'Cache-Control': 'no-store',
     'X-Accel-Buffering': 'no',
+  });
+}
+
+function streamCursor(message, res, options = {}) {
+  streamHeaders(res);
+  appendChatLog({ role: 'user', at: new Date().toISOString(), message: options.displayUserMessage || message });
+  setImmediate(async () => {
+    let assistantText = '';
+    try {
+      assistantText = await streamCursorPrompt({
+        prompt: message,
+        cwd: PROFILE_ROOT,
+        model: options.model || config.llm?.model,
+        apiKey: cursorApiKey(),
+        onText: chunk => res.write(chunk),
+      });
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 0, message: assistantText });
+      if (options.localEdit) {
+        const event = `\n\n[app-action] ${JSON.stringify(options.localEdit)}\n`;
+        assistantText += event;
+        res.write(event);
+      }
+      res.write('\n\n[process exited with code 0]\n');
+      res.end();
+    } catch (err) {
+      const text = `The Cursor assistant could not answer. ${err.message}\n`;
+      appendChatLog({ role: 'assistant', at: new Date().toISOString(), code: 1, message: assistantText || text });
+      if (!res.writableEnded) {
+        res.write(`${text}\n[process exited with code 1]\n`);
+        res.end();
+      }
+    }
   });
 }
 
@@ -5089,7 +5332,7 @@ function streamProcess(command, args, res) {
 function streamVerifiedScanReport(res) {
   streamHeaders(res);
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will direct-fetch shortlisted URLs, score them against the locked profile, and save the dated report.\n\n`);
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.on('data', chunk => {
@@ -5119,7 +5362,7 @@ function streamVerifiedScanReport(res) {
 function streamVerifiedScanChat(userMessage, res) {
   streamHeaders(res);
   appendChatLog({ role: 'user', at: new Date().toISOString(), message: userMessage });
-  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve(APP_ROOT, 'scripts', 'verified_scan.mjs')], { cwd: APP_ROOT, shell: false, env: childEnvForCursorScan(localClaudeEnv(), { provider: String(config.llm?.provider || ''), cursorKey: cursorApiKey() }), stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   res.write(`Running a verified scan for ${CANDIDATE_FIRST}. I will save the dated scan report and return the shortlist here.\n\n`);
@@ -5151,6 +5394,10 @@ function streamTailorPackage(payload, res) {
   streamHeaders(res);
   setImmediate(() => {
     const stamp = Date.now();
+    if ((config.llm?.provider || 'openai') === 'cursor') {
+      // Cursor is selected for chat and scoring; this endpoint still writes
+      // files through the existing local package generator.
+    }
     const inputPath = packageInputPath('tailor', stamp);
     writeJsonAtomic(inputPath, { ...payload, sourceRoot: PROFILE_ROOT, candidateName: CANDIDATE_NAME, personKey: PERSON_KEY });
     appendChatLog({ role: 'user', at: new Date().toISOString(), message: `Tailor resume and cover letter for ${payload.company} ${payload.role}` });
@@ -5370,6 +5617,16 @@ const server = createServer(async (req, res) => {
     send(res, err.statusCode || 500, { error: err.message });
   }
 });
+
+recoverJdQueue();
+
+function handleProcessExit() {
+  shutdownJdQueue();
+}
+
+process.on('SIGTERM', () => { handleProcessExit(); process.exit(0); });
+process.on('SIGINT', () => { handleProcessExit(); process.exit(0); });
+process.on('SIGHUP', () => { handleProcessExit(); process.exit(0); });
 
 server.listen(PORT, HOST, () => {
   console.log(`Suitor (${CANDIDATE_NAME}) web app listening on http://${HOST}:${PORT}`);

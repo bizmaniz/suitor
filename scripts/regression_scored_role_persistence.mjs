@@ -142,8 +142,8 @@ const scoredDb = openJobDb(emptyDbPath);
 upsertScoredRole(scoredDb, { company: 'Acme', role: 'Engineer', url: 'https://example.com/scored', score: 80 });
 scoredDb.close();
 const scoredKeys = loadSeenUrlKeys(emptyDbPath, historyPath);
-check('a scored db uses scored URLs, not history-only URLs', scoredKeys.has('https://example.com/scored'), true);
-check('a scored db does not treat a history-only URL as seen', scoredKeys.has('https://example.com/stranded'), false);
+check('a scored db uses scored URLs', scoredKeys.has('https://example.com/scored'), true);
+check('a scored db still treats a history-only URL as seen', scoredKeys.has('https://example.com/stranded'), true);
 
 db.close();
 rmSync(dir, { recursive: true, force: true });

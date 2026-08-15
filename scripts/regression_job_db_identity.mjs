@@ -18,13 +18,14 @@ const source = readFileSync(resolve(APP_ROOT, 'web', 'server.mjs'), 'utf-8');
 function extract(name) {
   const start = source.indexOf(`function ${name}(`);
   if (start === -1) throw new Error(`regression_job_db_identity: ${name}() not found in server.mjs`);
-  const terminator = source.indexOf('\n}\n', start);
-  if (terminator === -1) throw new Error(`regression_job_db_identity: no column-0 closing brace after ${name}() in server.mjs`);
-  const body = source.slice(start, terminator + 3);
+  const rest = source.slice(start);
+  const match = /\r?\n\}\r?\n/.exec(rest);
+  if (!match) throw new Error(`regression_job_db_identity: no column-0 closing brace after ${name}() in server.mjs`);
+  const body = rest.slice(0, match.index + match[0].length).replace(/\r\n/g, '\n');
   try {
     new Function(`${body}\nreturn ${name};`);
   } catch (err) {
-    throw new Error(`regression_job_db_identity: extracted ${name}() does not parse, so the '\\n}\\n' slice grabbed the wrong body: ${err.message}`);
+    throw new Error(`regression_job_db_identity: extracted ${name}() does not parse: ${err.message}`);
   }
   return body;
 }

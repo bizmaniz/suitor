@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Suitor</title>
-  <link rel="stylesheet" href="/styles.css?v=20260814-job-board">
+  <link rel="stylesheet" href="/styles.css?v=20260815-owner-fixes-24">
 </head>
 <body>
   <div class="app-shell">
@@ -146,6 +146,7 @@
           <div id="captureList" class="capture-list"></div>
         </section>
       </section>
+
 
       <section id="boardView" class="view">
         <div class="toolbar">
@@ -350,6 +351,21 @@
               <a id="exportCalendarLink" class="button-secondary compact" href="/api/calendar/interviews.ics" target="_blank" rel="noreferrer">Export ICS</a>
             </div>
           </section>
+          <section class="setting-card" id="cursorKeyCard">
+            <div class="setting-card-header">
+              <div>
+                <h3>Cursor API Key</h3>
+                <p>Stored in provider-secrets.json, not suitor.config.json. Replace or remove it here. Codex and Claude still use local CLI login.</p>
+              </div>
+            </div>
+            <p id="cursorKeyStatus" class="helper-text">Checking Cursor key status…</p>
+            <input id="cursorKeyInput" type="password" autocomplete="off" spellcheck="false" placeholder="Paste a new Cursor API key to replace the stored one">
+            <div class="connection-actions">
+              <button id="saveCursorKeyBtn" class="button-primary compact" type="button">Save Key</button>
+              <button id="removeCursorKeyBtn" class="button-secondary compact" type="button">Remove</button>
+            </div>
+            <p id="cursorKeyResult" class="helper-text"></p>
+          </section>
         </div>
       </section>
     </main>
@@ -382,10 +398,11 @@
     </aside>
   </div>
 
+
   <dialog id="addJdDialog" class="add-jd-dialog">
     <form method="dialog" id="addJdForm">
       <h2 id="addJdTitle">Add job description</h2>
-      <p class="helper-text">Paste the full posting. Scoring runs in the background and this panel closes right away.</p>
+      <p class="helper-text">Paste the full posting. This panel stays open until the score is saved. If scoring or save fails, your text stays so you can retry.</p>
       <label class="field-label">Company<input id="jdCompany" type="text"></label>
       <label class="field-label">Role<input id="jdRole" type="text"></label>
       <label class="field-label">Job description
@@ -394,7 +411,7 @@
       <p id="addJdError" class="error" hidden></p>
       <div class="composer-actions">
         <button type="button" id="addJdCancel" class="button-secondary">Cancel</button>
-        <button type="submit" class="button-primary">Score it</button>
+        <button type="submit" class="button-primary" id="addJdSubmit">Score it</button>
       </div>
     </form>
   </dialog>
@@ -409,6 +426,6 @@
     </form>
   </dialog>
 
-  <script src="/app.js?v=20260814-job-board" type="module"></script>
+  <script src="/app.js?v=20260815-owner-fixes-24" type="module"></script>
 </body>
 </html>

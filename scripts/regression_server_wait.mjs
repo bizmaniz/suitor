@@ -41,7 +41,7 @@ export async function waitForSuitorServer({
   let lastProbe = 'not started';
 
   while (Date.now() < deadline) {
-    if (child.exitCode != null) throw new Error(`server exited early with ${child.exitCode}`);
+    if (child.exitCode != null) throw new Error(`server exited early with ${child.exitCode}\n${String(getOutput() || '').slice(-2000)}`);
 
     const output = getOutput();
     const reportedTokenPath = serverReportedTokenPath(output);
@@ -65,5 +65,5 @@ export async function waitForSuitorServer({
     delayMs = Math.min(Math.ceil(delayMs * 1.35), 1000);
   }
 
-  throw new Error(`server did not become ready within ${timeoutMs}ms; last probe: ${lastProbe}`);
+  throw new Error(`server did not become ready within ${timeoutMs}ms; last probe: ${lastProbe}\n${String(getOutput() || '').slice(-2000)}`);
 }

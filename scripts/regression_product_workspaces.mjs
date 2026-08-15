@@ -205,7 +205,7 @@ try {
   assert.equal(removed.body.captures.length, 0);
 
   const db = new DatabaseSync(resolve(runtimeRoot, 'suitor.sqlite'), { readOnly: true });
-  assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, '4');
+  assert.equal(db.prepare("SELECT value FROM meta WHERE key = 'schema_version'").get().value, '5');
   const captureRow = db.prepare('SELECT deleted_at FROM captures WHERE id = ?').get(captureId);
   assert(captureRow.deleted_at, 'removed captures should remain as soft-deleted profile-local rows');
   db.close();

@@ -6,6 +6,8 @@ import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
 import { assertSafeFetchUrl, strictUrlFetchEnabled } from '../providers/_url_safety.mjs';
+import { completeCursorPrompt } from '../web/cursor_agent.mjs';
+import { runSelectedScoring } from '../web/llm_routing.mjs';
 import { jobIdentityForUrl, openJobDb, upsertScoredRole, urlIdentityKey } from '../web/job_db.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -662,8 +664,7 @@ function extractJson(text) {
   return JSON.parse(raw);
 }
 
-function runCodexScoring(fetched) {
-  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+function scoringPrompt(fetched) {
   const scorable = fetched.map(item => ({
     title: item.title,
     company: item.company,
@@ -726,6 +727,12 @@ Return exactly this JSON shape:
   "notes": ""
 }
 `;
+  return prompt;
+}
+
+function runCodexScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const prompt = scoringPrompt(fetched);
   const outFile = resolve(RUNTIME_ROOT, `verified-scan-${Date.now()}.json`);
   const result = spawnSync(resolveCodexBin(), [
     'exec',
@@ -749,6 +756,16 @@ Return exactly this JSON shape:
   try {
     if (existsSync(outFile)) rmSync(outFile, { force: true });
   } catch {}
+  return extractJson(output);
+}
+
+async function runCursorScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const output = await completeCursorPrompt({
+    prompt: scoringPrompt(fetched),
+    cwd: PROFILE_ROOT,
+    apiKey: process.env.CURSOR_API_KEY || '',
+  });
   return extractJson(output);
 }
 
@@ -860,6 +877,7 @@ function writeRole(lines, row, forceWithheld = false) {
   lines.push(`- **Recommended action:** ${row.recommendedAction || (row.score >= floor ? 'Package Role' : 'Needs Decision')}`);
   lines.push('');
 }
+
 
 function matchFetchedToRows(rows, fetched) {
   const claimed = new Set();
@@ -991,11 +1009,21 @@ export function persistScoredRoles(result, fetched, reportPath, options = {}) {
     }
   } catch (err) {
     console.log(`Could not persist scored roles to the database: ${String(err.message || err).slice(0, 200)}`);
-    return 0;
+    throw err;
   } finally {
     try { db?.close(); } catch {}
   }
   return written;
+}
+
+async function scoreWithSelectedProvider(fetched) {
+  return runSelectedScoring({
+    provider: String(process.env.SUITOR_LLM_PROVIDER || '').trim().toLowerCase(),
+    fetched,
+    runCursor: runCursorScoring,
+    runCodex: runCodexScoring,
+    fallback: fallbackScoring,
+  });
 }
 
 async function scoreSingleJd(jdPath, hints = {}) {
@@ -1019,13 +1047,17 @@ async function scoreSingleJd(jdPath, hints = {}) {
   let result;
   try {
     console.log(`Scoring ${text.length} characters of pasted job description against the locked profile...`);
-    result = runCodexScoring([fetched]);
+    result = await scoreWithSelectedProvider([fetched]);
   } catch (err) {
-    console.log(`Scoring fell back to Needs Verification because local model scoring failed: ${err.message}`);
-    result = fallbackScoring([fetched], err.message);
+    throw new Error(err.message || String(err));
+  }
+  const fallbackOnly = /fallback/i.test(result?.notes || '') && (result.rows || []).every(row => row.score == null);
+  if (fallbackOnly) {
+    throw new Error(result.notes || 'Scoring failed.');
   }
   const outPath = writeReport(result, [fetched]);
-  persistScoredRoles(result, [fetched], outPath, { resolveIdentityByUrl: true, deterministicVerification: true });
+  const written = persistScoredRoles(result, [fetched], outPath, { resolveIdentityByUrl: true, deterministicVerification: true });
+  if (!written) throw new Error('Scoring finished but the result could not be saved to the job board.');
   const row = (result.rows || [])[0] || {};
   console.log(`Saved ${outPath}`);
   console.log(`Scored: ${row.title || fetched.title} - ${row.score == null ? 'withheld' : `${row.score}/100`}`);
@@ -1067,7 +1099,7 @@ async function main() {
   let result;
   try {
     console.log(`Scoring ${fetched.length} verified candidates against ${CANDIDATE_FIRST}'s locked profile...`);
-    result = runCodexScoring(fetched);
+    result = await scoreWithSelectedProvider(fetched);
   } catch (err) {
     console.log(`Scoring fell back to Needs Verification because local model scoring failed: ${err.message}`);
     result = fallbackScoring(fetched, err.message);

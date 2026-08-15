@@ -9,7 +9,7 @@ import { mkdirSync } from 'fs';
 import { dirname } from 'path';
 import { DatabaseSync } from 'node:sqlite';
 
-export const JOB_DB_SCHEMA_VERSION = 4;
+export const JOB_DB_SCHEMA_VERSION = 5;
 
 function recordedSchemaVersion(db) {
   let value;
@@ -171,6 +171,22 @@ export function ensureJobDbSchema(db) {
     CREATE INDEX IF NOT EXISTS idx_contacts_application ON contacts(application_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_captures_identity ON captures(normalized_company, normalized_role, normalized_url);
     CREATE INDEX IF NOT EXISTS idx_captures_active ON captures(deleted_at, updated_at);
+
+    CREATE TABLE IF NOT EXISTS jd_jobs (
+      identity TEXT PRIMARY KEY,
+      company TEXT NOT NULL DEFAULT '',
+      role TEXT NOT NULL DEFAULT '',
+      url TEXT NOT NULL DEFAULT '',
+      jd_path TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT '',
+      error TEXT NOT NULL DEFAULT '',
+      pid INTEGER NOT NULL DEFAULT 0,
+      queued_at TEXT NOT NULL DEFAULT '',
+      started_at TEXT NOT NULL DEFAULT '',
+      finished_at TEXT NOT NULL DEFAULT '',
+      updated_at TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_jd_jobs_status ON jd_jobs(status, queued_at);
   `);
   try { db.prepare('ALTER TABLE interviews ADD COLUMN company TEXT NOT NULL DEFAULT ""').run(); } catch {}
   try { db.prepare('ALTER TABLE interviews ADD COLUMN role TEXT NOT NULL DEFAULT ""').run(); } catch {}
@@ -309,4 +325,42 @@ export function jobIdentityForUrl(db, url) {
   return db.prepare(
     'SELECT company, role, title FROM jobs WHERE normalized_url = ? ORDER BY id ASC LIMIT 1'
   ).get(normalizedUrl) || null;
+}
+
+export function persistJdJob(db, job = {}) {
+  const now = new Date().toISOString();
+  db.prepare(`
+    INSERT INTO jd_jobs (
+      identity, company, role, url, jd_path, status, error, pid,
+      queued_at, started_at, finished_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(identity) DO UPDATE SET
+      company = excluded.company,
+      role = excluded.role,
+      url = excluded.url,
+      jd_path = excluded.jd_path,
+      status = excluded.status,
+      error = excluded.error,
+      pid = excluded.pid,
+      queued_at = excluded.queued_at,
+      started_at = excluded.started_at,
+      finished_at = excluded.finished_at,
+      updated_at = excluded.updated_at
+  `).run(
+    text(job.identity), text(job.company), text(job.role), text(job.url),
+    text(job.jdPath || job.jd_path), text(job.status), text(job.error),
+    Number(job.pid) || 0,
+    text(job.queuedAt || job.queued_at) || now,
+    text(job.startedAt || job.started_at),
+    text(job.finishedAt || job.finished_at),
+    now,
+  );
+}
+
+export function deleteJdJob(db, identity) {
+  db.prepare('DELETE FROM jd_jobs WHERE identity = ?').run(text(identity));
+}
+
+export function listJdJobs(db) {
+  return db.prepare('SELECT * FROM jd_jobs ORDER BY queued_at ASC, identity ASC').all();
 }
