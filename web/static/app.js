@@ -788,10 +788,16 @@ function isWithinRollingDays(card, days) {
   return date >= cutoff;
 }
 
+function hasUiScore(value) {
+  if (value == null) return false;
+  if (typeof value === 'string' && value.trim() === '') return false;
+  return Number.isFinite(Number(value));
+}
+
 function fitLabel(card) {
-  const score = Number(card.score);
   const text = normalizeText(`${card.fields.Status || ''} ${card.fields.Notes || ''} ${card.fields['Next action'] || ''}`);
-  if (Number.isFinite(score)) {
+  if (hasUiScore(card.score)) {
+    const score = Number(card.score);
     if (score >= 80) return { label: 'High fit', tone: 'strong' };
     if (score >= 65) return { label: 'Good fit', tone: 'good' };
     if (score >= 45) return { label: 'Review', tone: 'watch' };
@@ -1009,7 +1015,7 @@ function renderApplications(cards = []) {
     const fit = fitLabel(card);
     const { company, role } = cardCompanyRole(card);
     const statusText = card.fields.Status || card.section;
-    const scoreValue = Number.isFinite(card.score) ? `${card.score}/100` : 'Not scored';
+    const scoreValue = hasUiScore(card.score) ? `${card.score}/100` : 'Not scored';
     const scoreTooltipParts = [];
     if (card.scoreBreakdown) scoreTooltipParts.push(card.scoreBreakdown);
     if (card.scoreDate) scoreTooltipParts.push(`from ${card.scoreDate} scan`);
@@ -1511,7 +1517,8 @@ function scanDecisionIsUserPassed(decision) {
 
 function applyShortlistDecision(role, decision) {
   if (!decision || !scanDecisionIsShortlisted(decision)) return role;
-  const score = Number(decision.score);
+  const scored = hasUiScore(decision.score);
+  const score = scored ? Number(decision.score) : NaN;
   return {
     ...role,
     company: decision.company || role.company || '',
@@ -1520,8 +1527,8 @@ function applyShortlistDecision(role, decision) {
     link: decision.url || role.link || '',
     comp: decision.comp || decision.compensation || role.comp || '',
     location: decision.location || role.location || '',
-    score: Number.isFinite(score) ? score : role.score,
-    scoreText: Number.isFinite(score) ? `${score}/100 (restored from ${state.meta.assistantName})` : role.scoreText,
+    score: scored ? score : role.score,
+    scoreText: scored ? `${score}/100 (restored from ${state.meta.assistantName})` : role.scoreText,
     action: decision.reason || role.action || `Restored to shortlist by ${state.meta.assistantName}.`,
     needsDetails: false,
     verification: role.verification || 'Restored from chat decision',
@@ -1530,7 +1537,8 @@ function applyShortlistDecision(role, decision) {
 }
 
 function roleFromShortlistDecision(decision) {
-  const score = Number(decision.score);
+  const scored = hasUiScore(decision.score);
+  const score = scored ? Number(decision.score) : NaN;
   return {
     company: decision.company || '',
     role: decision.role || '',
@@ -1539,8 +1547,8 @@ function roleFromShortlistDecision(decision) {
     location: decision.location || '',
     comp: decision.comp || decision.compensation || '',
     link: decision.url || '',
-    score: Number.isFinite(score) ? score : null,
-    scoreText: Number.isFinite(score) ? `${score}/100 (restored from ${state.meta.assistantName})` : 'Restored to shortlist',
+    score: scored ? score : null,
+    scoreText: scored ? `${score}/100 (restored from ${state.meta.assistantName})` : 'Restored to shortlist',
     action: decision.reason || `Restored to shortlist by ${state.meta.assistantName}.`,
     needsDetails: false,
     restoredFromDecision: true,
@@ -1874,8 +1882,8 @@ function renderScanResults(raw) {
     ...role,
     title: decision.title || role.title,
     link: decision.url || role.link || '',
-    score: Number.isFinite(Number(decision.score)) ? Number(decision.score) : role.score,
-    scoreText: Number.isFinite(Number(decision.score)) ? `${Number(decision.score)}/100` : role.scoreText,
+    score: hasUiScore(decision.score) ? Number(decision.score) : role.score,
+    scoreText: hasUiScore(decision.score) ? `${Number(decision.score)}/100` : role.scoreText,
     action: decision.reason || 'User marked this role as passed.',
     decision,
   })));
@@ -1960,7 +1968,7 @@ function renderScanResults(raw) {
               ${section.roles.slice(0, 18).map(role => `
                 <article>
                   <strong>${escapeHtml(scanDisplayTitle(role))}</strong>
-                  <span>${escapeHtml(role.score == null ? 'Score withheld' : `${role.score}/100`)}</span>
+                  <span>${escapeHtml(hasUiScore(role.score) ? `${role.score}/100` : 'Score withheld')}</span>
                   <p>${escapeHtml(role.action || role.verification || 'No recommendation captured.')}</p>
                 </article>
               `).join('')}
