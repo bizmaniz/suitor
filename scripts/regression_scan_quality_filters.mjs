@@ -8,6 +8,25 @@ import { join, resolve } from 'path';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
 import { isQuickReject, isSearchResultNoise, localEvaluationDecision, readProfileHardRejectPhrases } from './scan_quality_filters.mjs';
 
+const titleFilterRoot = mkdtempSync(join(tmpdir(), 'Suitor-title-filter-'));
+process.env.SUITOR_PROFILE_ROOT = titleFilterRoot;
+process.env.SUITOR_RUNTIME_ROOT = join(titleFilterRoot, '.suitor-runtime');
+const { titleTermMatcher } = await import('../scan.mjs');
+const ai = titleTermMatcher('ai');
+assert.equal(ai.test('AI Engineer'), true, 'word-boundary title match should accept a real AI title');
+assert.equal(ai.test('Maintenance Technician'), false, 'bare "ai" must not match Maintenance');
+assert.equal(ai.test('Retail Associate'), false, 'bare "ai" must not match Retail');
+assert.equal(ai.test('Training Lead'), false, 'bare "ai" must not match Training');
+assert.equal(ai.test('Chairman'), false, 'bare "ai" must not match Chairman');
+assert.equal(titleTermMatcher('chief of staff').test('Chief of Staff to the CEO'), true);
+
+const serverSource = readFileSync(resolve('web', 'server.mjs'), 'utf-8');
+assert.match(
+  serverSource,
+  /PRAGMA busy_timeout = 5000;\s*PRAGMA journal_mode = WAL/,
+  'openJobDb / jobDb() must set busy_timeout before journal_mode so a second writer cannot SQLITE_BUSY on the earlier pragmas',
+);
+
 assert.equal(isQuickReject({
   company: 'Example Staffing',
   title: 'Program Lead',
@@ -119,6 +138,7 @@ try {
   assert.deepEqual(Object.keys(payload.bySource), [], JSON.stringify(payload.bySource));
 } finally {
   rmSync(profileRoot, { recursive: true, force: true });
+  rmSync(titleFilterRoot, { recursive: true, force: true });
 }
 
 console.log('scan quality filter regression passed');

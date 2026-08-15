@@ -130,14 +130,24 @@ function resolveProvider(entry, providers) {
 
 // ── Title filter ────────────────────────────────────────────────────
 
+// Word-boundary matching, not substring: short keywords like "ai" must not fire
+// on Maintenance, Retail, Training, or Chairman.
+export function titleTermMatcher(term) {
+  const value = String(term || '').toLowerCase().trim();
+  const escaped = value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const prefix = /^[a-z0-9]/.test(value) ? '\\b' : '';
+  const suffix = /[a-z0-9]$/.test(value) ? '\\b' : '';
+  return new RegExp(`${prefix}${escaped}${suffix}`, 'i');
+}
+
 function buildTitleFilter(titleFilter) {
-  const positive = (titleFilter?.positive || []).map(k => k.toLowerCase());
-  const negative = (titleFilter?.negative || []).map(k => k.toLowerCase());
+  const positive = (titleFilter?.positive || []).map(titleTermMatcher);
+  const negative = (titleFilter?.negative || []).map(titleTermMatcher);
 
   return (title) => {
-    const lower = title.toLowerCase();
-    const hasPositive = positive.length === 0 || positive.some(k => lower.includes(k));
-    const hasNegative = negative.some(k => lower.includes(k));
+    const value = String(title || '');
+    const hasPositive = positive.length === 0 || positive.some(re => re.test(value));
+    const hasNegative = negative.some(re => re.test(value));
     return hasPositive && !hasNegative;
   };
 }
@@ -608,7 +618,11 @@ async function main() {
 
 }
 
-main().catch(err => {
-  console.error('Fatal:', err.message);
-  process.exit(1);
-});
+const isMain = Boolean(process.argv[1])
+  && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+if (isMain) {
+  main().catch(err => {
+    console.error('Fatal:', err.message);
+    process.exit(1);
+  });
+}

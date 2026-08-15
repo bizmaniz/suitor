@@ -765,7 +765,7 @@ function jobDb() {
   if (jobDbHandle) return jobDbHandle;
   mkdirSync(DATA_ROOT, { recursive: true });
   const db = new DatabaseSync(JOB_DB_PATH);
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
+  db.exec('PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
   ensureJobDbSchema(db);
   jobDbHandle = db;
   return jobDbHandle;
@@ -1564,7 +1564,8 @@ function connectionStatus() {
   };
 }
 
-function dbNumber(value) {
+function dbScore(value) {
+  if (value === null || value === undefined || value === '') return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -1684,7 +1685,7 @@ function upsertDbApplication(record = {}) {
     dbText(record.dateSubmitted),
     dbText(record.dateRejected),
     dbText(record.followUpDate),
-    dbNumber(record.score),
+    dbScore(record.score),
     dbText(record.scoreText),
     dbText(record.compensation),
     dbText(record.location),
@@ -1825,7 +1826,7 @@ function dbApplicationToCard(row = {}) {
       'Next action': row.next_action || row.notes || '',
       Notes: row.notes || '',
     },
-    score: dbNumber(row.score),
+    score: dbScore(row.score),
     scoreBreakdown: row.score_breakdown || row.notes || '',
     scoreDate: row.score_date || dateText,
   };
@@ -1897,7 +1898,7 @@ function normalizeScanDecisionRecord(item = {}) {
     source: dbText(item.source),
     reportFile,
     reason: dbText(item.reason),
-    score: dbNumber(item.score),
+    score: dbScore(item.score),
     comp: dbText(item.comp || item.compensation),
     location: dbText(item.location),
     decidedAt: dbText(item.decidedAt || item.decided_at),
@@ -1981,7 +1982,7 @@ function dbScanDecisionRecords() {
     source: row.source,
     reportFile: row.report_file,
     reason: row.reason,
-    score: dbNumber(row.score),
+    score: dbScore(row.score),
     comp: row.comp,
     location: row.location,
     decidedAt: row.decided_at,
