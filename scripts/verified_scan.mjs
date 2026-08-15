@@ -6,6 +6,9 @@ import { dirname, join, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { htmlToPlainText } from '../providers/_html_text.mjs';
 import { assertSafeFetchUrl, strictUrlFetchEnabled } from '../providers/_url_safety.mjs';
+import { completeCursorPrompt } from '../web/cursor_agent.mjs';
+import { runSelectedScoring } from '../web/llm_routing.mjs';
+import { jobIdentityForUrl, openJobDb, upsertScoredRole, urlIdentityKey } from '../web/job_db.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function envValue(name, legacyName, fallback = '') {
@@ -661,8 +664,7 @@ function extractJson(text) {
   return JSON.parse(raw);
 }
 
-function runCodexScoring(fetched) {
-  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+function scoringPrompt(fetched) {
   const scorable = fetched.map(item => ({
     title: item.title,
     company: item.company,
@@ -725,6 +727,12 @@ Return exactly this JSON shape:
   "notes": ""
 }
 `;
+  return prompt;
+}
+
+function runCodexScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const prompt = scoringPrompt(fetched);
   const outFile = resolve(RUNTIME_ROOT, `verified-scan-${Date.now()}.json`);
   const result = spawnSync(resolveCodexBin(), [
     'exec',
@@ -748,6 +756,16 @@ Return exactly this JSON shape:
   try {
     if (existsSync(outFile)) rmSync(outFile, { force: true });
   } catch {}
+  return extractJson(output);
+}
+
+async function runCursorScoring(fetched) {
+  if (!fetched.length) return { rows: [], notes: 'No new roles cleared local scan and tracker dedupe.' };
+  const output = await completeCursorPrompt({
+    prompt: scoringPrompt(fetched),
+    cwd: PROFILE_ROOT,
+    apiKey: process.env.CURSOR_API_KEY || '',
+  });
   return extractJson(output);
 }
 
@@ -860,7 +878,205 @@ function writeRole(lines, row, forceWithheld = false) {
   lines.push('');
 }
 
+
+function matchFetchedToRows(rows, fetched) {
+  const claimed = new Set();
+  const matches = rows.map(() => ({ detail: null, level: 'unmatched' }));
+  const counts = { url: 0, urlKey: 0, companyRole: 0, positional: 0, ambiguous: 0, unmatched: 0 };
+  const ambiguities = [];
+
+  const companiesMatch = (a, b) => {
+    const left = normalizeKey(a);
+    const right = normalizeKey(b);
+    return Boolean(left && right && left === right);
+  };
+  const titlesMatch = (a, b) => {
+    const left = normalizeKey(a);
+    const right = normalizeKey(b);
+    return Boolean(left && right && left === right);
+  };
+  const corroborateUrl = (row, candidate) => companiesMatch(row.company, candidate.company) && titlesMatch(row.title, candidate.title);
+
+  function tryLevel(level, keyFor, corroborate) {
+    const byKey = new Map();
+    for (const item of fetched) {
+      const key = keyFor(item);
+      if (!key) continue;
+      if (!byKey.has(key)) byKey.set(key, []);
+      byKey.get(key).push(item);
+    }
+    rows.forEach((row, index) => {
+      if (matches[index].level !== 'unmatched') return;
+      const key = keyFor(row);
+      if (!key) return;
+      const candidates = (byKey.get(key) || []).filter(item => !claimed.has(item));
+      if (candidates.length > 1) {
+        matches[index] = { detail: null, level: 'ambiguous' };
+        counts.ambiguous += 1;
+        ambiguities.push({ row, level, candidateCount: candidates.length, candidates });
+        return;
+      }
+      if (candidates.length === 1) {
+        if (corroborate && !corroborate(row, candidates[0])) return;
+        matches[index] = { detail: candidates[0], level };
+        claimed.add(candidates[0]);
+        counts[level] += 1;
+      }
+    });
+  }
+
+  tryLevel('url', item => String(item.url || '').trim(), corroborateUrl);
+  tryLevel('urlKey', item => urlIdentityKey(item.url), corroborateUrl);
+  tryLevel('companyRole', item => {
+    const company = normalizeKey(item.company || '');
+    const title = normalizeKey(item.title || item.role || '');
+    return company && title ? `${company}::${title}` : '';
+  });
+
+  const unmatchedIndexes = rows.map((_, index) => index).filter(index => matches[index].level === 'unmatched');
+  const unclaimed = fetched.filter(item => !claimed.has(item));
+  if (rows.length === 1 && fetched.length === 1 && unmatchedIndexes.length === 1 && unclaimed.length === 1) {
+    matches[unmatchedIndexes[0]] = { detail: unclaimed[0], level: 'positional' };
+    counts.positional += 1;
+  }
+  for (const match of matches) {
+    if (match.level === 'unmatched') counts.unmatched += 1;
+  }
+  return { matches, counts, ambiguities };
+}
+
+export function persistScoredRoles(result, fetched, reportPath, options = {}) {
+  const resolveIdentityByUrl = options.resolveIdentityByUrl === true;
+  const deterministicVerification = options.deterministicVerification === true;
+  const rows = result?.rows || [];
+  if (!rows.length) return 0;
+  const reportFile = reportPath ? reportPath.split(/[\\/]/).pop() : '';
+  const { matches } = matchFetchedToRows(rows, fetched);
+  let db;
+  let written = 0;
+  try {
+    db = openJobDb(resolve(RUNTIME_ROOT, 'suitor.sqlite'));
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      rows.forEach((row, rowIndex) => {
+        const modelUrl = String(row.url || '').trim();
+        const match = matches[rowIndex];
+        const detail = match.detail || {};
+        const fetchedUrl = String(detail.url || '').trim();
+        const url = fetchedUrl || modelUrl;
+        if (match.level === 'unmatched') {
+          console.log(`Scored role matched no fetched candidate, so its URL is the model's own and its JD text is missing: ${[row.company, row.title].filter(Boolean).join(' - ') || 'unnamed role'} <${modelUrl || 'no url'}>`);
+        }
+        const score = row.score === null || row.score === undefined || row.score === ''
+          ? null
+          : (Number.isFinite(Number(row.score)) ? Number(row.score) : null);
+        let company = row.company;
+        let role = row.title;
+        let title = [row.title, row.company].filter(Boolean).join(' - ');
+        let verification = [row.verificationState, row.verificationReason].filter(Boolean).join(' - ');
+        if (resolveIdentityByUrl && fetchedUrl) {
+          const existing = jobIdentityForUrl(db, url);
+          if (existing) {
+            company = existing.company;
+            role = existing.role;
+            title = existing.title;
+          }
+        }
+        if (deterministicVerification) {
+          verification = `UNVERIFIED - job description pasted by ${CANDIDATE_FIRST}; posting liveness not reconfirmed; ${(detail.text || '').length} characters scored directly.`;
+        }
+        if (upsertScoredRole(db, {
+          company,
+          role,
+          title,
+          url,
+          source: detail.source || row.source || '',
+          location: row.location,
+          comp: row.postedComp,
+          score,
+          scoreText: score === null ? '' : `${score}/100 (${row.scoreBreakdown || 'No breakdown returned'})`,
+          action: row.recommendedAction,
+          applyType: detail.applyType || row.applyType || '',
+          verification,
+          jdText: detail.text || '',
+          reportFile,
+        })) written += 1;
+      });
+      db.exec('COMMIT');
+    } catch (err) {
+      try { db.exec('ROLLBACK'); } catch {}
+      throw err;
+    }
+  } catch (err) {
+    console.log(`Could not persist scored roles to the database: ${String(err.message || err).slice(0, 200)}`);
+    throw err;
+  } finally {
+    try { db?.close(); } catch {}
+  }
+  return written;
+}
+
+async function scoreWithSelectedProvider(fetched) {
+  return runSelectedScoring({
+    provider: String(process.env.SUITOR_LLM_PROVIDER || '').trim().toLowerCase(),
+    fetched,
+    runCursor: runCursorScoring,
+    runCodex: runCodexScoring,
+    fallback: fallbackScoring,
+  });
+}
+
+async function scoreSingleJd(jdPath, hints = {}) {
+  const text = readFileSync(jdPath, 'utf-8').trim();
+  if (text.length < 120) throw new Error('That job description is too short to score. Paste the full posting.');
+  const company = String(hints.company || '').trim();
+  const role = String(hints.role || hints.title || '').trim();
+  if (!company && !role) throw new Error('Provide the company or the role the description belongs to.');
+  const url = String(hints.url || '').trim();
+  const fetched = {
+    title: role || 'Pasted role',
+    company,
+    url,
+    source: hints.source || 'pasted-jd',
+    text,
+    httpStatus: 0,
+    durationMs: 0,
+    verificationState: 'UNVERIFIED',
+    verificationReason: `UNVERIFIED - job description pasted by ${CANDIDATE_FIRST}; posting liveness not reconfirmed; ${text.length} characters scored directly.`,
+  };
+  let result;
+  try {
+    console.log(`Scoring ${text.length} characters of pasted job description against the locked profile...`);
+    result = await scoreWithSelectedProvider([fetched]);
+  } catch (err) {
+    throw new Error(err.message || String(err));
+  }
+  const fallbackOnly = /fallback/i.test(result?.notes || '') && (result.rows || []).every(row => row.score == null);
+  if (fallbackOnly) {
+    throw new Error(result.notes || 'Scoring failed.');
+  }
+  const outPath = writeReport(result, [fetched]);
+  const written = persistScoredRoles(result, [fetched], outPath, { resolveIdentityByUrl: true, deterministicVerification: true });
+  if (!written) throw new Error('Scoring finished but the result could not be saved to the job board.');
+  const row = (result.rows || [])[0] || {};
+  console.log(`Saved ${outPath}`);
+  console.log(`Scored: ${row.title || fetched.title} - ${row.score == null ? 'withheld' : `${row.score}/100`}`);
+  console.log('Roles reviewed: 1');
+}
+
+function cliArg(name) {
+  const index = process.argv.indexOf(`--${name}`);
+  return index >= 0 ? String(process.argv[index + 1] || '') : '';
+}
+
 async function main() {
+  const jdPath = cliArg('jd-file');
+  if (jdPath) {
+    await scoreSingleJd(jdPath, {
+      company: cliArg('company'), role: cliArg('role'), url: cliArg('url'), source: cliArg('source'),
+    });
+    return;
+  }
   console.log(`Starting verified scan for ${CANDIDATE_FIRST}...`);
   console.log('Running local portal scan and tracker dedupe...');
   const scan = runScanJson();
@@ -883,12 +1099,13 @@ async function main() {
   let result;
   try {
     console.log(`Scoring ${fetched.length} verified candidates against ${CANDIDATE_FIRST}'s locked profile...`);
-    result = runCodexScoring(fetched);
+    result = await scoreWithSelectedProvider(fetched);
   } catch (err) {
     console.log(`Scoring fell back to Needs Verification because local model scoring failed: ${err.message}`);
     result = fallbackScoring(fetched, err.message);
   }
   const outPath = writeReport(result, fetched);
+  persistScoredRoles(result, fetched, outPath);
   markBrowserResultsConsumed(browserOffers.length);
   console.log(`Saved ${outPath}`);
   console.log(`Roles reviewed: ${(result.rows || []).length}`);
