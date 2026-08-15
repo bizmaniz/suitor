@@ -11,6 +11,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import { posixBrowserProfileProcessIds } from '../scripts/browser_profile_command.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -3291,7 +3292,11 @@ function writeBrowserStatusPatch(patch, logLine = '') {
 }
 
 function browserProfileProcessIds() {
-  if (process.platform !== 'win32') return [];
+  if (process.platform !== 'win32') {
+    const result = spawnSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf-8' });
+    if (result.error) return [];
+    return posixBrowserProfileProcessIds(result.stdout, BROWSER_PROFILE_DIR, process.pid);
+  }
   const escapedProfile = BROWSER_PROFILE_DIR.replace(/'/g, "''").toLowerCase();
   const script = [
     `$needle = '${escapedProfile}'`,
@@ -3311,18 +3316,19 @@ function browserProfileProcessIds() {
 }
 
 function releaseBrowserProfileProcesses() {
-  if (process.platform !== 'win32') return [];
   const pids = browserProfileProcessIds();
   for (const pid of pids) {
     try {
       process.kill(pid, 'SIGTERM');
     } catch {}
-    try {
-      spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
-        encoding: 'utf-8',
-        windowsHide: true,
-      });
-    } catch {}
+    if (process.platform === 'win32') {
+      try {
+        spawnSync('taskkill.exe', ['/PID', String(pid), '/T', '/F'], {
+          encoding: 'utf-8',
+          windowsHide: true,
+        });
+      } catch {}
+    }
   }
   return pids;
 }

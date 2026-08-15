@@ -45,10 +45,15 @@ const RESULTS_PATH = resolve(BROWSER_ROOT, 'linkedin-results.json');
 const CANCEL_PATH = resolve(BROWSER_ROOT, 'cancel.flag');
 const DEFAULT_QUERY = envValue('SUITOR_LINKEDIN_QUERY', 'SUITOR_LINKEDIN_QUERY', '"Chief of Staff" OR "Strategic Operations" OR "Director of Partnerships" remote');
 const DEFAULT_LOCATION = envValue('SUITOR_LINKEDIN_LOCATION', 'SUITOR_LINKEDIN_LOCATION', 'United States');
+// 103644278 = United States. Used by default only for US searches.
+// Override with SUITOR_LINKEDIN_GEO_ID for any location, or "none" to disable.
+const RAW_GEO_ID = envValue('SUITOR_LINKEDIN_GEO_ID', 'SUITOR_LINKEDIN_GEO_ID', '');
+const GEO_ID_EXPLICIT = Boolean(String(RAW_GEO_ID || '').trim());
+const DEFAULT_GEO_ID = (value => (/^(none|off|0)$/i.test(value) ? '' : value))(RAW_GEO_ID || '103644278');
 const DEFAULT_WORKPLACE = envValue('SUITOR_LINKEDIN_WORKPLACE', 'SUITOR_LINKEDIN_WORKPLACE', '2');
 const DEFAULT_RECENCY = envValue('SUITOR_LINKEDIN_RECENCY', 'SUITOR_LINKEDIN_RECENCY', 'r604800');
 const DEFAULT_EXPERIENCE = envValue('SUITOR_LINKEDIN_EXPERIENCE', 'SUITOR_LINKEDIN_EXPERIENCE', '4,5,6');
-const DEFAULT_SALARY_BUCKET = envValue('SUITOR_LINKEDIN_SALARY_BUCKET', 'SUITOR_LINKEDIN_SALARY_BUCKET', '5');
+const DEFAULT_SALARY_BUCKET = (value => (/^(none|off|0)$/i.test(value) ? '' : value))(envValue('SUITOR_LINKEDIN_SALARY_BUCKET', 'SUITOR_LINKEDIN_SALARY_BUCKET', '5'));
 const LINKEDIN_MAX_PASSES = Math.max(4, Math.min(Number(envValue('SUITOR_LINKEDIN_MAX_PASSES', 'SUITOR_LINKEDIN_MAX_PASSES', 12)) || 12, 24));
 const LINKEDIN_STAGNANT_PASS_LIMIT = Math.max(2, Math.min(Number(envValue('SUITOR_LINKEDIN_STAGNANT_PASSES', 'SUITOR_LINKEDIN_STAGNANT_PASSES', 3)) || 3, 6));
 const BLOCKED_SOURCE_COMPANY_RE = /\b(swooped|ladders|jobot|cybercoders|robert half|dice|motion recruitment|recruiting|staffing|talent)\b/i;
@@ -346,10 +351,23 @@ function parseArgs() {
   return args;
 }
 
+function isUsLinkedInLocation(location) {
+  const value = String(location || '').trim();
+  if (!value) return true;
+  return /^(united states(?: of america)?|usa|u\.s\.a\.?|u\.s\.?|us)$/i.test(value);
+}
+
 export function linkedInSearchUrl(query) {
   const params = new URLSearchParams();
   params.set('keywords', query || DEFAULT_QUERY);
   params.set('location', DEFAULT_LOCATION);
+  // LinkedIn scopes job search by geoId; the free-text `location` alone is
+  // advisory and LinkedIn falls back to the session's own geography.
+  // The default US geoId is only attached for US / empty locations unless
+  // SUITOR_LINKEDIN_GEO_ID was set explicitly.
+  if (DEFAULT_GEO_ID && (GEO_ID_EXPLICIT || isUsLinkedInLocation(DEFAULT_LOCATION))) {
+    params.set('geoId', DEFAULT_GEO_ID);
+  }
   if (DEFAULT_WORKPLACE) params.set('f_WT', DEFAULT_WORKPLACE);
   if (DEFAULT_RECENCY) params.set('f_TPR', DEFAULT_RECENCY);
   if (DEFAULT_EXPERIENCE) params.set('f_E', DEFAULT_EXPERIENCE);
@@ -463,9 +481,15 @@ export function linkedInJobKey(value = {}) {
   }
 }
 
-async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
+export async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
   return page.evaluate(({ max, excluded }) => {
     const normalize = value => String(value || '').replace(/\s+/g, ' ').trim();
+    const cardLines = value => String(value || '')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .split(/\n|\s{2,}/)
+      .map(line => line.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
     const jobKey = rawUrl => {
       const url = String(rawUrl || '').trim();
       try {
@@ -491,14 +515,30 @@ async function collectLinkedInJobSeeds(page, limit, excludedKeys = []) {
       if (seen.has(key) || excludedSet.has(key)) continue;
       seen.add(key);
       const card = anchor.closest('[data-job-id], li, div');
-      const text = normalize(card?.innerText || '');
-      const lines = text.split(/\s{2,}|\n/).map(normalize).filter(Boolean);
+      const lines = cardLines(card?.innerText || '');
+      const text = lines.join(' ') || normalize(card?.innerText || '');
       const company = lines.find(line => line !== title && line.length > 1 && line.length < 80) || '';
       const location = lines.find(line => /remote|hybrid|united states|atlanta|new york|san francisco|boston|austin|charlotte|nashville/i.test(line)) || '';
       rows.push({ key, title, company, location, url: href, source: 'linkedin-browser', snippet: text.slice(0, 700) });
       if (rows.length >= max) break;
     }
-    return { rows, visibleCount: anchors.length };
+    const cards = Array.from(document.querySelectorAll('[data-job-id], li[data-occludable-job-id]'));
+    for (const card of cards) {
+      if (rows.length >= max) break;
+      const id = card.getAttribute('data-job-id') || card.getAttribute('data-occludable-job-id') || '';
+      if (!/^\d+$/.test(id)) continue;
+      const key = `linkedin:${id}`;
+      if (seen.has(key) || excludedSet.has(key)) continue;
+      const lines = cardLines(card.innerText || '');
+      const text = lines.join(' ');
+      const title = (lines[0] || '').replace(/ with verification$/i, '');
+      if (!title || title.length < 4) continue;
+      seen.add(key);
+      const company = lines.find(line => line !== lines[0] && line.length > 1 && line.length < 80) || '';
+      const location = lines.find(line => /remote|hybrid|united states|atlanta|new york|san francisco|boston|austin|charlotte|nashville/i.test(line)) || '';
+      rows.push({ key, title, company, location, url: `https://www.linkedin.com/jobs/view/${id}/`, source: 'linkedin-browser', snippet: text.slice(0, 700) });
+    }
+    return { rows, visibleCount: anchors.length + cards.length };
   }, { max: limit, excluded: excludedKeys });
 }
 
@@ -551,7 +591,11 @@ async function enrichLinkedInJob(page, seed) {
       const clean = String(url || '').split('?')[0];
       const link = Array.from(document.querySelectorAll('a[href*="/jobs/view/"], a[href*="currentJobId="]'))
         .find(anchor => String(anchor.href || '').split('?')[0] === clean);
-      const target = link?.closest('[data-job-id], li, div') || link;
+      const idMatch = clean.match(/\/jobs\/view\/(\d+)/i);
+      const card = !link && idMatch
+        ? document.querySelector(`[data-job-id="${idMatch[1]}"], li[data-occludable-job-id="${idMatch[1]}"]`)
+        : null;
+      const target = link?.closest('[data-job-id], li, div') || card || link;
       (target || link)?.scrollIntoView?.({ block: 'center', inline: 'nearest' });
       link?.click?.();
       if (!link) target?.click?.();

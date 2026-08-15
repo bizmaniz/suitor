@@ -2,9 +2,11 @@
 
 import assert from 'assert/strict';
 import { chromium } from 'playwright';
+import { spawnSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { isSuitorBrowserProfileCommand, posixBrowserProfileProcessIds } from './browser_profile_command.mjs';
 
 const profileRoot = mkdtempSync(join(tmpdir(), 'Suitor-browser-regression-'));
 process.env.SUITOR_PROFILE_ROOT = profileRoot;
@@ -21,6 +23,7 @@ const {
   linkedInSearchUrl,
   linkedInFilterSummary,
   isBlockedSourceResult,
+  collectLinkedInJobSeeds,
   extractLinkedInJobs,
   classifyLinkedInSessionSnapshot,
   waitForManualLoginClose,
@@ -42,6 +45,72 @@ assert.equal(url.searchParams.get('f_WT'), '2');
 assert.equal(url.searchParams.get('f_TPR'), 'r604800');
 assert.equal(url.searchParams.get('f_E'), '4,5,6');
 assert.equal(url.searchParams.get('f_SB2'), '5');
+assert.equal(url.searchParams.get('geoId'), '103644278');
+
+function linkedInSearchParams(extraEnv = {}) {
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    process.env.SUITOR_PROFILE_ROOT = ${JSON.stringify(profileRoot)};
+    process.env.SUITOR_PERSON_KEY = 'test';
+    for (const [key, value] of Object.entries(${JSON.stringify(extraEnv)})) process.env[key] = value;
+    const { linkedInSearchUrl } = await import(${JSON.stringify(new URL('./browser_adapter.mjs', import.meta.url).href)});
+    const parsed = new URL(linkedInSearchUrl('Chief of Staff'));
+    console.log(JSON.stringify(Object.fromEntries(parsed.searchParams)));
+  `], { encoding: 'utf-8', timeout: 15000 });
+  assert.equal(result.status, 0, `${result.stderr || ''}\n${result.stdout || ''}`);
+  const lines = String(result.stdout || '').trim().split('\n');
+  return JSON.parse(lines[lines.length - 1]);
+}
+
+const disabledFilters = linkedInSearchParams({
+  SUITOR_LINKEDIN_GEO_ID: 'none',
+  SUITOR_LINKEDIN_SALARY_BUCKET: 'none',
+});
+assert.equal(disabledFilters.geoId, undefined);
+assert.equal(disabledFilters.f_SB2, undefined);
+
+const canadaFilters = linkedInSearchParams({
+  SUITOR_LINKEDIN_LOCATION: 'Canada',
+});
+assert.equal(canadaFilters.location, 'Canada');
+assert.equal(canadaFilters.geoId, undefined, 'default US geoId must not attach to a non-US location');
+
+const canadaExplicitGeo = linkedInSearchParams({
+  SUITOR_LINKEDIN_LOCATION: 'Canada',
+  SUITOR_LINKEDIN_GEO_ID: '101174742',
+});
+assert.equal(canadaExplicitGeo.location, 'Canada');
+assert.equal(canadaExplicitGeo.geoId, '101174742');
+
+const usLocationStillDefault = linkedInSearchParams({
+  SUITOR_LINKEDIN_LOCATION: 'United States',
+});
+assert.equal(usLocationStillDefault.geoId, '103644278');
+
+const serverSource = readFileSync(new URL('../web/server.mjs', import.meta.url), 'utf-8').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+assert.match(serverSource, /function browserProfileProcessIds\(\) \{\n  if \(process\.platform !== 'win32'\) \{\n    const result = spawnSync\('ps'/);
+assert.match(serverSource, /posixBrowserProfileProcessIds\(result\.stdout, BROWSER_PROFILE_DIR, process\.pid\)/);
+assert.match(serverSource, /function releaseBrowserProfileProcesses\(\) \{\n  const pids = browserProfileProcessIds\(\);/);
+assert.doesNotMatch(serverSource, /function releaseBrowserProfileProcesses\(\) \{\n  if \(process\.platform !== 'win32'\) return \[\];/);
+
+const profileDir = '/Users/me/.suitor-runtime/browser/chromium-profile';
+assert.equal(isSuitorBrowserProfileCommand(`/Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir}`, profileDir), true);
+assert.equal(isSuitorBrowserProfileCommand(`/ms-playwright/chromium/chrome-mac/Chromium.app/Contents/MacOS/Chromium --user-data-dir="${profileDir}"`, profileDir), true);
+assert.equal(isSuitorBrowserProfileCommand(`/opt/google/chrome --user-data-dir=${profileDir}/`, profileDir), true);
+assert.equal(isSuitorBrowserProfileCommand(`vim ${profileDir}/Preferences`, profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand(`tail -f ${profileDir}/chrome_debug.log`, profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand(`node /app/server.mjs --profile ${profileDir}`, profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand('/usr/bin/google-chrome --user-data-dir=/tmp/other-profile', profileDir), false);
+assert.equal(isSuitorBrowserProfileCommand(`/usr/bin/google-chrome --user-data-dir=${profileDir}-extra`, profileDir), false);
+
+const psOutput = [
+  `  111 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome --user-data-dir=${profileDir}`,
+  `  222 vim ${profileDir}/Preferences`,
+  `  333 tail -f ${profileDir}/chrome_debug.log`,
+  `  444 /opt/homebrew/bin/node /app --config ${profileDir}`,
+  '  555 /usr/bin/google-chrome --user-data-dir=/tmp/other-profile',
+  `  666 /opt/google/chrome --user-data-dir=${profileDir}-extra`,
+].join('\n');
+assert.deepEqual(posixBrowserProfileProcessIds(psOutput, profileDir, 999), [111]);
 
 assert.match(linkedInFilterSummary(), /Remote/);
 assert.match(linkedInFilterSummary(), /Past week/);
@@ -210,6 +279,58 @@ assert.equal(extracted[0].company, 'Formic');
 assert.equal(extracted[0].applyType, 'Apply');
 assert.match(extracted[0].jdText, /founder-adjacent Chief of Staff role/);
 assert.ok(extracted[0].jdText.length > 900);
+
+const cardOnlyContext = await chromium.launchPersistentContext(join(profileRoot, 'chromium-card-test'), {
+  headless: true,
+  viewport: { width: 1280, height: 900 },
+});
+const cardPage = cardOnlyContext.pages()[0] || await cardOnlyContext.newPage();
+await cardPage.setContent(`
+  <html>
+    <body>
+      <ul>
+        <li data-job-id="555" onclick="selectJob('apply')">
+          <div>Director of Operations</div>
+          <div>Acme Labs</div>
+          <div>Remote - United States</div>
+        </li>
+      </ul>
+      <main class="jobs-details__main-content">
+        <h1 class="jobs-unified-top-card__job-title"></h1>
+        <div class="jobs-unified-top-card__company-name"></div>
+        <span class="jobs-unified-top-card__bullet"></span>
+        <button id="applyButton"></button>
+        <section class="jobs-description"></section>
+      </main>
+      <script>
+        function selectJob(kind) {
+          const title = document.querySelector('h1');
+          const company = document.querySelector('.jobs-unified-top-card__company-name');
+          const button = document.querySelector('#applyButton');
+          const description = document.querySelector('.jobs-description');
+          title.innerText = 'Director of Operations';
+          company.innerText = 'Acme Labs';
+          button.innerText = 'Apply';
+          description.innerText = ${descriptionLiteral};
+        }
+      </script>
+    </body>
+  </html>
+`);
+const cardSeeds = await collectLinkedInJobSeeds(cardPage, 5);
+const seedRows = Array.isArray(cardSeeds) ? cardSeeds : cardSeeds.rows;
+assert.equal(seedRows.length, 1, 'card-only harvest should parse data-job-id cards before opening details');
+assert.equal(seedRows[0].title, 'Director of Operations');
+assert.equal(seedRows[0].company, 'Acme Labs');
+assert.equal(seedRows[0].location, 'Remote - United States');
+assert.match(seedRows[0].url, /\/jobs\/view\/555/);
+
+const cardExtracted = await extractLinkedInJobs(cardPage, 5);
+await cardOnlyContext.close();
+assert.equal(cardExtracted.length, 1, 'LinkedIn harvest should find cards that only have data-job-id');
+assert.equal(cardExtracted[0].title, 'Director of Operations');
+assert.equal(cardExtracted[0].company, 'Acme Labs');
+assert.match(cardExtracted[0].url, /\/jobs\/view\/555/);
 
 const loginContext = await chromium.launchPersistentContext(join(profileRoot, 'chromium-login-test'), {
   headless: true,
