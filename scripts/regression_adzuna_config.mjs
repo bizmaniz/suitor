@@ -61,8 +61,7 @@ const serverSource = readFileSync(resolve(APP_ROOT, 'web', 'server.mjs'), 'utf-8
 assert.match(serverSource, /function childEnvForAdzunaScan/, 'Adzuna keys have a scan-only env helper');
 assert.match(serverSource, /delete env\.ADZUNA_APP_ID/, 'chat/LinkedIn/verified-scan env strips ADZUNA_APP_ID');
 assert.match(serverSource, /delete env\.ADZUNA_APP_KEY/, 'chat/LinkedIn/verified-scan env strips ADZUNA_APP_KEY');
-assert.match(serverSource, /streamAdzunaProcess\(process\.execPath, args, res\)/, 'only the scan.mjs child receives Adzuna keys');
-assert.match(serverSource, /env: childEnvForAdzunaScan\(\)/, 'Adzuna scan spawn uses the scan-only env');
+assert.match(serverSource, /streamProcess\(process\.execPath, args, res, childEnvForAdzunaScan\(\)\)/, 'only the scan.mjs child receives Adzuna keys');
 assert.doesNotMatch(serverSource, /env: localClaudeEnv\(\)[\s\S]{0,80}ADZUNA_APP_/, 'localClaudeEnv callers do not re-inject Adzuna keys');
 
 const adzunaSource = readFileSync(resolve(APP_ROOT, 'providers', 'adzuna.mjs'), 'utf-8');

@@ -5358,7 +5358,7 @@ async function handleApi(req, res, pathname) {
       return streamVerifiedScanReport(res);
     }
     const args = body.dryRun === false ? ['scan.mjs', '--no-websearch'] : ['scan.mjs', '--dry-run', '--no-websearch'];
-    return streamAdzunaProcess(process.execPath, args, res);
+    return streamProcess(process.execPath, args, res, childEnvForAdzunaScan());
   }
 
   if (pathname === '/api/tailor' && req.method === 'POST') {
@@ -5557,20 +5557,9 @@ function streamCodex(message, res, options = {}) {
   });
 }
 
-function streamProcess(command, args, res) {
+function streamProcess(command, args, res, env = localClaudeEnv()) {
   streamHeaders(res);
-  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env: localClaudeEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
-  child.stdout.on('data', chunk => res.write(chunk.toString()));
-  child.stderr.on('data', chunk => res.write(chunk.toString()));
-  child.on('close', code => {
-    res.write(`\n[process exited with code ${code}]\n`);
-    res.end();
-  });
-}
-
-function streamAdzunaProcess(command, args, res) {
-  streamHeaders(res);
-  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env: childEnvForAdzunaScan(), stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(command, args, { cwd: APP_ROOT, shell: false, env, stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', chunk => res.write(chunk.toString()));
   child.stderr.on('data', chunk => res.write(chunk.toString()));
   child.on('close', code => {
