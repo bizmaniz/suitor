@@ -24,14 +24,35 @@ function assertGreenhouseUrl(url) {
   return url;
 }
 
+function boardTokenFromPath(pathname = '') {
+  const parts = String(pathname || '').replace(/^\/+|\/+$/g, '').split('/').filter(Boolean);
+  if (!parts.length) return '';
+  if (parts[0] === 'v1' && parts[1] === 'boards' && parts[2]) return parts[2];
+  return parts[0];
+}
+
 function resolveApiUrl(entry) {
   if (entry.api) {
     assertGreenhouseUrl(entry.api);
     return entry.api;
   }
   const url = entry.careers_url || '';
-  const match = url.match(/job-boards(?:\.eu)?\.greenhouse\.io\/([^/?#]+)/);
-  if (match) return `https://boards-api.greenhouse.io/v1/boards/${match[1]}/jobs`;
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  if (parsed.protocol !== 'https:') return null;
+  const host = parsed.hostname.toLowerCase();
+  const token = boardTokenFromPath(parsed.pathname);
+  if (!token) return null;
+  if (host === 'boards-api.greenhouse.io') {
+    return `https://boards-api.greenhouse.io/v1/boards/${token}/jobs`;
+  }
+  if (host === 'boards.greenhouse.io' || host === 'job-boards.greenhouse.io' || host === 'job-boards.eu.greenhouse.io') {
+    return `https://boards-api.greenhouse.io/v1/boards/${token}/jobs`;
+  }
   return null;
 }
 

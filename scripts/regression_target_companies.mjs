@@ -10,9 +10,25 @@ import {
   generatedTargetCompanyEntries,
   normalizeTargetCompany,
 } from '../web/target_companies.mjs';
+import greenhouse from '../providers/greenhouse.mjs';
 
 assert.equal(classifyBoardUrl('https://job-boards.greenhouse.io/acme'), 'greenhouse');
 assert.equal(classifyBoardUrl('https://boards.greenhouse.io/acme/jobs/1'), 'greenhouse');
+assert.equal(
+  greenhouse.detect({ name: 'Acme', careers_url: 'https://boards.greenhouse.io/acme' })?.url,
+  'https://boards-api.greenhouse.io/v1/boards/acme/jobs',
+  'classic boards.greenhouse.io URLs must resolve to the public jobs API',
+);
+assert.equal(
+  greenhouse.detect({ name: 'Acme', careers_url: 'https://job-boards.greenhouse.io/acme' })?.url,
+  'https://boards-api.greenhouse.io/v1/boards/acme/jobs',
+  'job-boards.greenhouse.io URLs must resolve to the public jobs API',
+);
+assert.equal(
+  greenhouse.detect({ name: 'Acme', careers_url: 'https://boards.greenhouse.io/acme/jobs/1' })?.url,
+  'https://boards-api.greenhouse.io/v1/boards/acme/jobs',
+  'a job page under boards.greenhouse.io still uses the board token',
+);
 assert.equal(classifyBoardUrl('https://jobs.lever.co/acme'), 'lever');
 assert.equal(classifyBoardUrl('https://jobs.ashbyhq.com/acme'), 'ashby');
 assert.equal(classifyBoardUrl('https://careers.smartrecruiters.com/Acme'), 'smartrecruiters');
