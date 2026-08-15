@@ -27,3 +27,7 @@ LAN mode also enables stricter URL-fetch protection for user-controlled RSS feed
 The browser session uses an HttpOnly cookie after login, and state-changing API requests require a same-origin Origin or Referer when those headers are present. Repeated failed auth attempts are rate-limited.
 
 Report vulnerabilities privately through GitHub Security Advisories rather than public issues.
+
+## Cursor API Key File
+
+When Cursor is selected, Suitor stores the user API key in `<runtime>/provider-secrets.json`, not in `suitor.config.json`. After each write, Suitor restricts that file: Unix mode `0600`, or on Windows an `icacls` ACL that turns off inheritance and grants only the current user read+write. Settings can replace or remove the key. The key is passed only to Cursor operations, not to Claude, Codex, or other child processes.

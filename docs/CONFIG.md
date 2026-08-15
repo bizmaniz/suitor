@@ -25,7 +25,7 @@ Config file: `suitor.config.json` in `SUITOR_CONFIG_DIR` or `~/.suitor`.
 | `llm.claudeBin` | `SUITOR_CLAUDE_BIN` | Optional explicit Claude path |
 | `llm.permissionMode` | `SUITOR_CLAUDE_PERMISSION_MODE` | Defaults to conservative CLI behavior |
 | — | `CURSOR_API_KEY` | Cursor user API key; overrides `<runtime>/provider-secrets.json`. Never stored in `suitor.config.json`. |
-| — | `SUITOR_CURSOR_MODEL` | Cursor model id, default `composer-2.5` |
+| — | `SUITOR_CURSOR_MODEL` | Cursor model id, default `composer-2.5`. Node 22.13+ is required for the Cursor SDK. Settings can replace or remove the stored key. |
 
 ## Candidate Summary
 
