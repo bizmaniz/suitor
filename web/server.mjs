@@ -1528,6 +1528,16 @@ function writeOnboardingArtifacts(current = config) {
   }
 }
 
+function mergeConnectionBlock(current = {}, incoming = {}) {
+  const next = { ...current, ...incoming };
+  for (const key of ['linkedin', 'providers', 'email']) {
+    if (incoming[key] && typeof incoming[key] === 'object' && !Array.isArray(incoming[key])) {
+      next[key] = { ...(current[key] || {}), ...incoming[key] };
+    }
+  }
+  return next;
+}
+
 function connectionStatus() {
   const providers = config.connections?.providers || {};
   let jobCount = 0;
@@ -4176,7 +4186,7 @@ async function handleApi(req, res, pathname) {
       ...body,
       llm: { ...(config.llm || {}), ...(body.llm || {}) },
       intake: { ...(config.intake || {}), ...(body.intake || {}) },
-      connections: { ...(config.connections || {}), ...(body.connections || {}) },
+      connections: mergeConnectionBlock(config.connections || {}, body.connections || {}),
     };
     next.intake.progress = onboardingStatus(next);
     next.onboarded = Boolean(body.onboarded || (next.assistantName && onboardingStatus(next).tier1Complete));
@@ -4201,7 +4211,8 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/connections/linkedin/disconnect' && req.method === 'POST') {
     config.connections ||= {};
-    config.connections.linkedin = { enabled: false };
+    // Spread, never replace: disconnect must not wipe extra LinkedIn keys.
+    config.connections.linkedin = { ...(config.connections.linkedin || {}), enabled: false };
     saveConfig(config);
     if (isUnder(BROWSER_ROOT, DATA_ROOT) && existsSync(BROWSER_ROOT)) {
       rmSync(BROWSER_ROOT, { recursive: true, force: true });
