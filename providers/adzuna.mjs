@@ -22,8 +22,8 @@ function apiUrl(entry, page = 1) {
     app_id: envValue('ADZUNA_APP_ID'),
     app_key: envValue('ADZUNA_APP_KEY'),
     results_per_page: String(entry.adzuna_results_per_page || 50),
-    what: String(entry.adzuna_what || 'Director Operations OR Chief of Staff OR Director Integration'),
-    where: String(entry.adzuna_where || 'Atlanta OR Remote'),
+    what: String(entry.adzuna_what || ''),
+    where: String(entry.adzuna_where || 'Remote'),
     'content-type': 'application/json',
   });
   const country = String(entry.adzuna_country || 'us').toLowerCase();

@@ -24,7 +24,7 @@
     "test:verification": "node scripts/regression_verified_classification.mjs",
     "test:source-quality": "node scripts/regression_scan_quality_filters.mjs",
     "test:browser-source": "node scripts/regression_browser_source.mjs",
-    "test:regression": "node scripts/regression_scan_state.mjs && node scripts/regression_verified_classification.mjs && node scripts/regression_scan_quality_filters.mjs && node scripts/regression_browser_source.mjs && node scripts/regression_app_actions.mjs && node scripts/regression_profile_guardrails.mjs && node scripts/regression_security_hardening.mjs && node scripts/regression_product_workspaces.mjs"
+    "test:regression": "node scripts/regression_scan_state.mjs && node scripts/regression_verified_classification.mjs && node scripts/regression_scan_quality_filters.mjs && node scripts/regression_browser_source.mjs && node scripts/regression_app_actions.mjs && node scripts/regression_profile_guardrails.mjs && node scripts/regression_security_hardening.mjs && node scripts/regression_product_workspaces.mjs && node scripts/regression_linkedin_lanes.mjs && node scripts/regression_target_companies.mjs && node scripts/regression_adzuna_config.mjs && node scripts/regression_application_notes.mjs"
   },
   "keywords": [
     "ai",

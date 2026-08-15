@@ -3,7 +3,7 @@
 import { createServer } from 'http';
 import { spawn, spawnSync } from 'child_process';
 import { createHash, randomBytes, randomUUID, timingSafeEqual } from 'crypto';
-import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, copyFileSync, rmSync, renameSync } from 'fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync, copyFileSync, rmSync, renameSync } from 'fs';
 import { networkInterfaces } from 'os';
 import { extname, join, resolve, relative, basename, isAbsolute } from 'path';
 import { fileURLToPath } from 'url';
@@ -11,6 +11,23 @@ import { DatabaseSync } from 'node:sqlite';
 import { config, saveConfig, detectCli, onboardingStatus } from './config.mjs';
 import { assertSafeFetchUrl } from '../providers/_url_safety.mjs';
 import { localEvaluationDecision } from '../scripts/scan_quality_filters.mjs';
+import { splitQueries, MAX_SEARCH_LANES } from '../scripts/linkedin_lanes.mjs';
+import {
+  classifyBoardUrl,
+  generatedTargetCompanyEntries,
+  linkedInFallbackCompanies,
+  targetCompanyList,
+  targetCompanyNames,
+} from './target_companies.mjs';
+import {
+  addTimelineEntry,
+  applicationNoteCounts,
+  deleteTimelineEntry,
+  ensureApplicationNotesSchema,
+  identityKeyFor,
+  readApplicationNotes,
+  upsertApplicationNotes,
+} from './application_notes.mjs';
 
 const APP_ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const SOURCE_ROOT = resolve(APP_ROOT, '..');
@@ -176,6 +193,69 @@ mkdirSync(CHAT_BACKUP_ROOT, { recursive: true });
 mkdirSync(ASSESSMENTS_ROOT, { recursive: true });
 mkdirSync(BROWSER_ROOT, { recursive: true });
 
+const PROVIDER_SECRETS_PATH = resolve(DATA_ROOT, 'provider-secrets.json');
+const MAX_PROVIDER_SECRET_LENGTH = 200;
+let providerSecretsUnreadable = '';
+
+function providerSecrets() {
+  let raw;
+  try {
+    raw = readFileSync(PROVIDER_SECRETS_PATH, 'utf-8');
+  } catch (err) {
+    providerSecretsUnreadable = err.code === 'ENOENT' ? '' : `${err.code || 'read error'}: ${err.message}`;
+    if (providerSecretsUnreadable) console.error(`Suitor: cannot read ${PROVIDER_SECRETS_PATH} - ${providerSecretsUnreadable}`);
+    return {};
+  }
+  try {
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not a JSON object');
+    providerSecretsUnreadable = '';
+    return parsed;
+  } catch (err) {
+    providerSecretsUnreadable = `corrupt file: ${err.message}`;
+    console.error(`Suitor: cannot parse ${PROVIDER_SECRETS_PATH} - ${err.message}`);
+    return {};
+  }
+}
+
+function saveProviderSecrets(next) {
+  providerSecrets();
+  if (providerSecretsUnreadable) {
+    const err = new Error(`Refusing to overwrite ${PROVIDER_SECRETS_PATH} (${providerSecretsUnreadable}). Move or repair the file, then save again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+  mkdirSync(DATA_ROOT, { recursive: true });
+  writeTextAtomic(PROVIDER_SECRETS_PATH, `${JSON.stringify(next, null, 2)}\n`, { mode: 0o600 });
+  try { chmodSync(PROVIDER_SECRETS_PATH, 0o600); } catch {}
+}
+
+function adzunaKeys() {
+  const stored = providerSecrets().adzuna || {};
+  return {
+    appId: String(process.env.ADZUNA_APP_ID || stored.appId || '').trim(),
+    appKey: String(process.env.ADZUNA_APP_KEY || stored.appKey || '').trim(),
+  };
+}
+
+function adzunaFromEnvironment() {
+  return Boolean(String(process.env.ADZUNA_APP_ID || '').trim() || String(process.env.ADZUNA_APP_KEY || '').trim());
+}
+
+function adzunaConfigured() {
+  const { appId, appKey } = adzunaKeys();
+  return Boolean(appId && appKey);
+}
+
+function adzunaSearchSettings(current = config) {
+  const stored = current.connections?.adzunaSearch || {};
+  return {
+    what: String(stored.what || '').slice(0, 200),
+    where: String(stored.where || 'Remote').slice(0, 120),
+    country: (String(stored.country || 'us').toLowerCase().match(/^[a-z]{2}$/) || ['us'])[0],
+  };
+}
+
 const token = loadOrCreateToken();
 const tokenHash = sha256(token);
 const sessionId = loadOrCreateSessionId();
@@ -184,8 +264,11 @@ const AUTH_FAILURE_WINDOW_MS = Number(process.env.SUITOR_AUTH_FAILURE_WINDOW_MS 
 const authFailures = new Map();
 
 function localClaudeEnv() {
+  const adzuna = adzunaKeys();
   return {
     ...process.env,
+    ...(adzuna.appId ? { ADZUNA_APP_ID: adzuna.appId } : {}),
+    ...(adzuna.appKey ? { ADZUNA_APP_KEY: adzuna.appKey } : {}),
     SUITOR_CONFIG_DIR: config.configDir,
     SUITOR_PROFILE_ROOT: PROFILE_ROOT,
     SUITOR_RUNTIME_ROOT: DATA_ROOT,
@@ -767,6 +850,7 @@ function jobDb() {
   const db = new DatabaseSync(JOB_DB_PATH);
   db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA foreign_keys = ON;');
   ensureJobDbSchema(db);
+  ensureApplicationNotesSchema(db);
   jobDbHandle = db;
   return jobDbHandle;
 }
@@ -1082,26 +1166,8 @@ function interviewCalendarIcs() {
   return lines.join('\r\n') + '\r\n';
 }
 
-function targetCompanySlug(value = '') {
-  return String(value || '')
-    .toLowerCase()
-    .replace(/&/g, ' and ')
-    .replace(/[^a-z0-9]+/g, '')
-    .trim();
-}
-
-function generatedTargetCompanyEntries(companies = []) {
-  const entries = [];
-  for (const company of companies.map(value => String(value || '').trim()).filter(Boolean)) {
-    const slug = targetCompanySlug(company);
-    if (!slug) continue;
-    entries.push(
-      { name: `${company} (Greenhouse)`, provider: 'greenhouse', careersUrl: `https://job-boards.greenhouse.io/${slug}` },
-      { name: `${company} (Lever)`, provider: 'lever', careersUrl: `https://jobs.lever.co/${slug}` },
-      { name: `${company} (Ashby)`, provider: 'ashby', careersUrl: `https://jobs.ashbyhq.com/${slug}` },
-    );
-  }
-  return entries;
+function currentTargetCompanies(current = config) {
+  return targetCompanyList(current.connections?.targetCompanies || []);
 }
 
 const INTAKE_STAGES = [
@@ -1498,7 +1564,9 @@ function writeOnboardingArtifacts(current = config) {
     name: `Custom RSS ${index + 1}`,
     url: String(url || '').trim(),
   })).filter(feed => feed.url);
-  const targetEntries = generatedTargetCompanyEntries(current.connections?.targetCompanies || []);
+  const targetEntries = generatedTargetCompanyEntries(currentTargetCompanies(current));
+  const adzunaSearch = adzunaSearchSettings(current);
+  const adzunaEntries = current.connections?.providers?.adzuna && adzunaConfigured() ? [adzunaSearch] : [];
   writeTextAtomic(portalsPath, [
     '# Suitor generated provider configuration',
     'providers:',
@@ -1510,6 +1578,15 @@ function writeOnboardingArtifacts(current = config) {
       `    careers_url: ${JSON.stringify(entry.careersUrl)}`,
       '    enabled: true',
     ]),
+    ...adzunaEntries.flatMap(entry => [
+      `  - name: ${JSON.stringify('Adzuna Market')}`,
+      '    scan_method: adzuna',
+      `    adzuna_what: ${JSON.stringify(entry.what)}`,
+      `    adzuna_where: ${JSON.stringify(entry.where)}`,
+      `    adzuna_country: ${JSON.stringify(entry.country)}`,
+      '    adzuna_results_per_page: 50',
+      '    enabled: true',
+    ]),
     'rss_feeds:',
     ...rssFeeds.flatMap(feed => [
       `  - name: ${JSON.stringify(feed.name)}`,
@@ -1517,7 +1594,7 @@ function writeOnboardingArtifacts(current = config) {
       '    enabled: true',
     ]),
     'target_companies:',
-    ...(current.connections?.targetCompanies || []).map(name => `  - ${JSON.stringify(name)}`),
+    ...targetCompanyNames(current.connections?.targetCompanies || []).map(name => `  - ${JSON.stringify(name)}`),
     'company_exclusions:',
     ...splitIntakeList(profile.dealbreakers.summary).map(name => `  - ${JSON.stringify(name)}`),
     'exclude_keywords:',
@@ -1544,17 +1621,22 @@ function connectionStatus() {
       enabled: Boolean(config.connections?.linkedin?.enabled),
       status: existsSync(BROWSER_PROFILE_DIR) ? 'connected' : 'not_set_up',
       dataStored: 'Local Playwright browser profile only; no credentials are stored by Suitor.',
+      searchQuery: String(config.connections?.linkedin?.searchQuery || ''),
     },
     providers: Object.entries(providers).map(([name, enabled]) => ({ name, enabled: Boolean(enabled) })),
     adzuna: {
       enabled: Boolean(providers.adzuna),
-      status: process.env.ADZUNA_APP_ID && process.env.ADZUNA_APP_KEY ? 'connected' : 'not_set_up',
+      status: adzunaConfigured() ? 'connected' : 'not_set_up',
+      fromEnvironment: adzunaFromEnvironment(),
+      search: adzunaSearchSettings(),
     },
     customRss: { count: (config.connections?.rssFeeds || []).length },
     targetCompanies: {
-      count: (config.connections?.targetCompanies || []).length,
-      generatedBoards: generatedTargetCompanyEntries(config.connections?.targetCompanies || []),
+      count: currentTargetCompanies().length,
+      withBoards: currentTargetCompanies().filter(item => item.boards.length).length,
+      generatedBoards: generatedTargetCompanyEntries(currentTargetCompanies()),
     },
+    linkedinSearchQuery: String(config.connections?.linkedin?.searchQuery || ''),
     email: {
       enabled: Boolean(config.connections?.email?.enabled),
       status: existsSync(EMAIL_IMPORT_LOG) ? 'local_imports' : 'not_set_up',
@@ -1810,11 +1892,13 @@ function importEmailUpdate(payload = {}) {
   return { parsed, trackerResult: null };
 }
 
-function dbApplicationToCard(row = {}) {
+function dbApplicationToCard(row = {}, noteTally = { notes: 0, timeline: 0 }) {
   const known = knownRoleMeta(row.company || '', row.role || '');
   const dateText = row.date_submitted || row.date_rejected || row.date_found || row.score_date || '';
   return {
     title: row.role ? `${row.company} - ${row.role}` : row.company,
+    company: row.company || '',
+    role: row.role || '',
     section: row.section || applicationSectionForStatus(row.status),
     fields: {
       Status: row.status || row.section || '',
@@ -1828,6 +1912,8 @@ function dbApplicationToCard(row = {}) {
     score: dbNumber(row.score),
     scoreBreakdown: row.score_breakdown || row.notes || '',
     scoreDate: row.score_date || dateText,
+    noteCount: Number(noteTally.notes || 0),
+    timelineCount: Number(noteTally.timeline || 0),
   };
 }
 
@@ -1847,7 +1933,9 @@ function dbTrackerCards() {
       company COLLATE NOCASE,
       role COLLATE NOCASE
   `).all();
-  return rows.map(dbApplicationToCard);
+  let counts = new Map();
+  try { counts = applicationNoteCounts(jobDb()); } catch {}
+  return rows.map(row => dbApplicationToCard(row, counts.get(identityKeyFor(row.company, row.role)) || { notes: 0, timeline: 0 }));
 }
 
 function importTrackerIntoDb(db = jobDb()) {
@@ -4178,6 +4266,12 @@ async function handleApi(req, res, pathname) {
       intake: { ...(config.intake || {}), ...(body.intake || {}) },
       connections: { ...(config.connections || {}), ...(body.connections || {}) },
     };
+    if (body.connections?.linkedin && typeof body.connections.linkedin === 'object') {
+      next.connections.linkedin = { ...(config.connections?.linkedin || {}), ...body.connections.linkedin };
+    }
+    if (Array.isArray(next.connections?.targetCompanies)) {
+      next.connections.targetCompanies = targetCompanyList(next.connections.targetCompanies);
+    }
     next.intake.progress = onboardingStatus(next);
     next.onboarded = Boolean(body.onboarded || (next.assistantName && onboardingStatus(next).tier1Complete));
     Object.assign(config, next);
@@ -4201,7 +4295,7 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/connections/linkedin/disconnect' && req.method === 'POST') {
     config.connections ||= {};
-    config.connections.linkedin = { enabled: false };
+    config.connections.linkedin = { ...(config.connections.linkedin || {}), enabled: false };
     saveConfig(config);
     if (isUnder(BROWSER_ROOT, DATA_ROOT) && existsSync(BROWSER_ROOT)) {
       rmSync(BROWSER_ROOT, { recursive: true, force: true });
@@ -4209,6 +4303,177 @@ async function handleApi(req, res, pathname) {
     }
     writeOnboardingArtifacts(config);
     return send(res, 200, { ok: true, connections: connectionStatus() });
+  }
+
+  if (pathname === '/api/adzuna' && req.method === 'GET') {
+    const { appId } = adzunaKeys();
+    return send(res, 200, {
+      ok: true,
+      enabled: Boolean(config.connections?.providers?.adzuna),
+      configured: adzunaConfigured(),
+      fromEnvironment: adzunaFromEnvironment(),
+      appIdHint: appId ? `${appId.slice(0, 4)}…` : '',
+      search: adzunaSearchSettings(),
+    });
+  }
+
+  if (pathname === '/api/adzuna' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const badField = ['appId', 'appKey'].find(key => body[key] !== undefined
+      && (typeof body[key] !== 'string' || body[key].length > MAX_PROVIDER_SECRET_LENGTH));
+    if (badField) {
+      return send(res, 400, { error: `${badField} must be a string of at most ${MAX_PROVIDER_SECRET_LENGTH} characters.` });
+    }
+    const secrets = providerSecrets();
+    const current = secrets.adzuna || {};
+    const appId = String(body.appId || '').trim() || String(current.appId || '').trim();
+    const appKey = String(body.appKey || '').trim() || String(current.appKey || '').trim();
+    if (body.clear === true) {
+      delete secrets.adzuna;
+    } else {
+      secrets.adzuna = { ...(appId ? { appId } : {}), ...(appKey ? { appKey } : {}) };
+      if (!secrets.adzuna.appId && !secrets.adzuna.appKey) delete secrets.adzuna;
+    }
+    try {
+      saveProviderSecrets(secrets);
+    } catch (err) {
+      return send(res, err.statusCode || 500, { error: err.message });
+    }
+    config.connections = config.connections || {};
+    if (body.search && typeof body.search === 'object') {
+      const currentSearch = adzunaSearchSettings(config);
+      const keep = (value, fallback, max) => (typeof value === 'string' && value.trim() ? value.trim().slice(0, max) : fallback);
+      const country = String(body.search.country ?? '').trim().toLowerCase();
+      config.connections.adzunaSearch = {
+        what: keep(body.search.what, currentSearch.what, 200),
+        where: keep(body.search.where, currentSearch.where, 120),
+        country: /^[a-z]{2}$/.test(country) ? country : currentSearch.country,
+      };
+    }
+    if (typeof body.enabled === 'boolean') {
+      config.connections.providers = { ...(config.connections.providers || {}), adzuna: body.enabled };
+    }
+    saveConfig(config);
+    writeOnboardingArtifacts(config);
+    const { appId: storedId } = adzunaKeys();
+    return send(res, 200, {
+      ok: true,
+      enabled: Boolean(config.connections?.providers?.adzuna),
+      configured: adzunaConfigured(),
+      fromEnvironment: adzunaFromEnvironment(),
+      appIdHint: storedId ? `${storedId.slice(0, 4)}…` : '',
+      search: adzunaSearchSettings(),
+      connections: connectionStatus(),
+    });
+  }
+
+  if (pathname === '/api/application-notes' && req.method === 'GET') {
+    const url = new URL(req.url, `http://${req.headers.host}`);
+    const company = String(url.searchParams.get('company') || '').trim();
+    const role = String(url.searchParams.get('role') || '').trim();
+    if (!company && !role) return send(res, 400, { error: 'Provide a company or a role.' });
+    const key = identityKeyFor(company, role);
+    const { notes, timeline } = readApplicationNotes(jobDb(), key);
+    return send(res, 200, {
+      ok: true,
+      identityKey: key,
+      notes: notes || { company, role, salary_asked: '', contact: '', applied_via: '', notes: '' },
+      timeline,
+    });
+  }
+
+  if (pathname === '/api/application-notes' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const company = String(body.company || '').trim();
+    const role = String(body.role || '').trim();
+    if (!company && !role) return send(res, 400, { error: 'Provide a company or a role.' });
+    const key = identityKeyFor(company, role);
+    upsertApplicationNotes(jobDb(), key, { ...body, company, role });
+    const { notes, timeline } = readApplicationNotes(jobDb(), key);
+    return send(res, 200, { ok: true, identityKey: key, notes, timeline });
+  }
+
+  if (pathname === '/api/application-timeline' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const company = String(body.company || '').trim();
+    const role = String(body.role || '').trim();
+    if (!company && !role) return send(res, 400, { error: 'Provide a company or a role.' });
+    const key = identityKeyFor(company, role);
+    if (body.deleteId !== undefined) {
+      deleteTimelineEntry(jobDb(), key, body.deleteId);
+    } else {
+      const note = String(body.note || '').trim();
+      if (!note) return send(res, 400, { error: 'Write what happened before adding it.' });
+      addTimelineEntry(jobDb(), key, body);
+    }
+    const { notes, timeline } = readApplicationNotes(jobDb(), key);
+    return send(res, 200, { ok: true, identityKey: key, notes, timeline });
+  }
+
+  if (pathname === '/api/target-companies' && req.method === 'GET') {
+    return send(res, 200, {
+      ok: true,
+      companies: currentTargetCompanies().map(company => ({
+        ...company,
+        boards: company.boards.map(url => ({ url, provider: classifyBoardUrl(url) })),
+      })),
+    });
+  }
+
+  if (pathname === '/api/target-companies' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const incoming = Array.isArray(body.companies) ? body.companies : [];
+    const cleaned = [];
+    const seen = new Set();
+    for (const item of incoming.slice(0, 60)) {
+      const name = String(item?.name || '').trim().slice(0, 80);
+      if (!name) continue;
+      const key = name.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const boards = [];
+      for (const board of (Array.isArray(item?.boards) ? item.boards : []).slice(0, 6)) {
+        let url = String(typeof board === 'string' ? board : board?.url || '').trim();
+        if (!url) continue;
+        if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+        try {
+          const parsed = new URL(url);
+          if (!/^https?:$/.test(parsed.protocol)) continue;
+          boards.push(parsed.toString());
+        } catch {}
+      }
+      cleaned.push({ name, boards });
+    }
+    config.connections = config.connections || {};
+    config.connections.targetCompanies = cleaned;
+    saveConfig(config);
+    writeOnboardingArtifacts(config);
+    return send(res, 200, {
+      ok: true,
+      companies: cleaned.map(company => ({
+        ...company,
+        boards: company.boards.map(url => ({ url, provider: classifyBoardUrl(url) })),
+      })),
+      connections: connectionStatus(),
+    });
+  }
+
+  if (pathname === '/api/search-lanes' && req.method === 'GET') {
+    return send(res, 200, { ok: true, query: String(config.connections?.linkedin?.searchQuery || ''), maxLanes: MAX_SEARCH_LANES });
+  }
+
+  if (pathname === '/api/search-lanes' && req.method === 'POST') {
+    const body = JSON.parse(await readBody(req) || '{}');
+    const raw = Array.isArray(body.lanes) ? body.lanes.join('; ') : String(body.query || '');
+    const lanes = splitQueries(raw).map(lane => lane.slice(0, 80));
+    if (!lanes.length) return send(res, 400, { error: 'Provide at least one search lane.' });
+    config.connections = config.connections || {};
+    config.connections.linkedin = {
+      ...(config.connections.linkedin || {}),
+      searchQuery: lanes.join('; '),
+    };
+    saveConfig(config);
+    return send(res, 200, { ok: true, query: lanes.join('; '), lanes, maxLanes: MAX_SEARCH_LANES });
   }
 
   if (pathname === '/api/connections/email/import' && req.method === 'POST') {
@@ -4750,10 +5015,12 @@ async function handleApi(req, res, pathname) {
 
   if (pathname === '/api/browser/linkedin-search' && req.method === 'POST') {
     const body = JSON.parse(await readBody(req) || '{}');
-    const query = String(body.query || '').trim();
-    const limit = Math.max(1, Math.min(Number(body.limit || 10), 25));
+    const query = String(body.query || config.connections?.linkedin?.searchQuery || '').trim();
+    const limit = Math.max(1, Math.min(Number(body.limit || 6), 12));
     const args = ['linkedin-search', '--limit', String(limit)];
     if (query) args.push('--query', query);
+    const companies = linkedInFallbackCompanies(config.connections?.targetCompanies || []);
+    if (companies.length) args.push('--companies', companies.join('; '));
     const activePids = browserProfileProcessIds();
     if (activePids.length) {
       const message = browserProfileBusyMessage(activePids.length);

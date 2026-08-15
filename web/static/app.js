@@ -22,6 +22,8 @@ const state = {
     assistantName: 'Assistant',
   },
   onboarding: null,
+  linkedinLanes: [],
+  targetCompanies: [],
 };
 
 localStorage.removeItem('suitorToken');
@@ -431,14 +433,112 @@ function prettyBrowserUrl(rawUrl) {
   }
 }
 
-function localLinkedInJobsUrl() {
-  const query = (els.linkedinQuery?.value || '').trim() || `${state.meta.candidateFirst || ''} operations leadership`.trim() || 'operations leadership';
+const MAX_SEARCH_LANES = 14;
+
+function parseLaneList(raw) {
+  const lanes = [];
+  const seen = new Set();
+  for (const part of String(raw || '').split(/[;\n]+/)) {
+    const lane = part.trim();
+    if (!lane || seen.has(lane.toLowerCase())) continue;
+    seen.add(lane.toLowerCase());
+    lanes.push(lane);
+  }
+  return lanes.slice(0, MAX_SEARCH_LANES);
+}
+
+function linkedInLanes() {
+  const lanes = state.linkedinLanes || [];
+  if (lanes.length) return lanes;
+  return [`${state.meta.candidateFirst || ''} operations leadership`.trim() || 'operations leadership'];
+}
+
+function localLinkedInJobsUrl(lane) {
   const params = new URLSearchParams({
-    keywords: query,
+    keywords: lane || linkedInLanes()[0],
     f_WT: '2',
     f_TPR: 'r604800',
   });
   return `https://www.linkedin.com/jobs/search/?${params.toString()}`;
+}
+
+let laneSaveInFlight = false;
+
+function renderLinkedInLanes() {
+  const wrap = document.querySelector('#linkedinLanes');
+  if (!wrap) return;
+  const lanes = state.linkedinLanes || [];
+  wrap.hidden = false;
+  const count = document.querySelector('#laneCount');
+  if (count) count.textContent = `${lanes.length}/${MAX_SEARCH_LANES}`;
+  const lastLane = lanes.length === 1;
+  const removeTitle = lastLane
+    ? 'Keep at least one lane - add another before removing this one'
+    : laneSaveInFlight
+    ? 'Saving the previous change'
+    : 'Remove this lane';
+  const removeDisabled = lastLane || laneSaveInFlight;
+  wrap.innerHTML = lanes.length
+    ? lanes.map((lane, index) => `
+        <span class="lane-chip">
+          <button type="button" class="lane-chip-open" data-lane="${escapeHtml(lane)}" title="Open just this search on this device"><span class="lane-chip-index">${index + 1}</span>${escapeHtml(lane)}</button>
+          <button type="button" class="lane-chip-remove" data-remove-lane="${index}"${removeDisabled ? ' disabled' : ''} title="${escapeHtml(removeTitle)}" aria-label="Remove ${escapeHtml(lane)}">&times;</button>
+        </span>`).join('')
+    : '<span class="empty-mini">No lanes yet. Type a title above and press Enter.</span>';
+}
+
+async function saveLinkedInLanes(lanes, message) {
+  if (laneSaveInFlight) return;
+  const previous = state.linkedinLanes || [];
+  laneSaveInFlight = true;
+  state.linkedinLanes = lanes;
+  renderLinkedInLanes();
+  try {
+    const response = await api('/api/search-lanes', { method: 'POST', body: JSON.stringify({ lanes }) });
+    state.linkedinLanes = parseLaneList(response.query || '');
+    if (message) showToast(message);
+  } catch (err) {
+    state.linkedinLanes = previous;
+    showToast(err.message || 'Could not save search lanes');
+  } finally {
+    laneSaveInFlight = false;
+    renderLinkedInLanes();
+  }
+}
+
+function addLinkedInLane() {
+  const input = els.linkedinQuery;
+  if (!input) return;
+  const incoming = parseLaneList(input.value);
+  if (!incoming.length) return;
+  if (laneSaveInFlight) {
+    showToast('Still saving the last lane change - try again in a moment');
+    return;
+  }
+  const lanes = [...(state.linkedinLanes || [])];
+  const existing = new Set(lanes.map(lane => lane.toLowerCase()));
+  const added = [];
+  const duplicates = [];
+  for (const lane of incoming) {
+    if (existing.has(lane.toLowerCase())) {
+      duplicates.push(lane);
+      continue;
+    }
+    if (lanes.length >= MAX_SEARCH_LANES) {
+      showToast(`Lane limit is ${MAX_SEARCH_LANES}. Remove one before adding "${lane}".`);
+      break;
+    }
+    existing.add(lane.toLowerCase());
+    lanes.push(lane);
+    added.push(lane);
+  }
+  input.value = '';
+  input.focus();
+  if (!added.length) {
+    if (duplicates.length) showToast(`Already a lane: ${duplicates.join(', ')}`);
+    return;
+  }
+  saveLinkedInLanes(lanes, `Added ${added.join(', ')}`);
 }
 
 async function loadBrowserPreview(url) {
@@ -518,6 +618,12 @@ function renderConnections(connections = {}) {
     <div class="connection-row">
       <div><strong>API/feed providers</strong><span>${escapeHtml(providerSummary)}</span></div>
       <small>${providers.filter(item => item.enabled).map(item => item.name).slice(0, 4).join(', ') || 'none'}</small>
+    </div>
+    <div class="connection-row">
+      <div><strong>Adzuna API</strong><span>Keyed job-search API. Credentials stay in a 0600 secrets file, never in suitor.config.json.</span></div>
+      <small>${escapeHtml(connections.adzuna?.status === 'connected'
+        ? (connections.adzuna?.enabled ? 'key saved · provider on' : 'key saved · provider off')
+        : 'no key')}</small>
     </div>
     <div class="connection-row">
       <div><strong>Custom RSS</strong><span>User-supplied feeds stored in local config</span></div>
@@ -741,7 +847,10 @@ function normalizeText(value) {
 }
 
 function cardCompanyRole(card) {
-  const parts = card.title.split(/—|–|\s-\s/).map(part => part.trim()).filter(Boolean);
+  if (card.company || card.role) {
+    return { company: card.company || '', role: card.role || '' };
+  }
+  const parts = String(card.title || '').split(/—|–|\s-\s/).map(part => part.trim()).filter(Boolean);
   return {
     company: parts[0] || card.title,
     role: parts.slice(1).join(' - ') || card.title,
@@ -1032,13 +1141,13 @@ function renderApplications(cards = []) {
       <dl class="card-facts">
         <div><dt>Last touch</dt><dd>${escapeHtml(lastTouch(card))}</dd></div>
         <div><dt>Next action</dt><dd>${escapeHtml(card.fields['Next action'] || 'Review current package and decide next step.')}</dd></div>
+        ${Number(card.noteCount || 0) + Number(card.timelineCount || 0) ? `<div><dt>Notes</dt><dd>${Number(card.noteCount || 0) + Number(card.timelineCount || 0)}</dd></div>` : ''}
       </dl>
       <button class="card-action" type="button">${escapeHtml(primaryAction(card))}</button>
     `;
     div.addEventListener('click', (event) => {
       if (event.target.closest('button')) return;
-      state.selectedRole = card;
-      addMessage('system', `Viewing ${card.title}. Chat questions now include this role as context.`);
+      openApplicationPanel(card);
     });
     div.querySelector('.card-action').addEventListener('click', () => {
       state.selectedRole = card;
@@ -2170,6 +2279,257 @@ function wireIntakeChat(stages = []) {
   });
 }
 
+function classifyBoardUrlClient(url = '') {
+  const value = String(url || '').trim();
+  if (!/^https?:\/\//i.test(value)) return '';
+  let parsed;
+  try { parsed = new URL(value); } catch { return ''; }
+  const host = parsed.hostname.toLowerCase();
+  const hasSlug = parsed.pathname.replace(/^\/+|\/+$/g, '').length > 0;
+  const hosts = [
+    ['greenhouse', ['boards-api.greenhouse.io', 'boards.greenhouse.io', 'job-boards.greenhouse.io', 'job-boards.eu.greenhouse.io']],
+    ['lever', ['jobs.lever.co']],
+    ['ashby', ['jobs.ashbyhq.com']],
+    ['smartrecruiters', ['careers.smartrecruiters.com', 'jobs.smartrecruiters.com']],
+    ['workable', ['apply.workable.com']],
+  ];
+  for (const [provider, list] of hosts) {
+    if (list.includes(host) && hasSlug) return provider;
+  }
+  if (/^[^.]+\.wd\d+\.myworkdayjobs\.com$/.test(host)) return 'workday';
+  if (/^[^.]+\.workable\.com$/.test(host)) return 'workable';
+  return '';
+}
+
+function normalizeClientCompany(value) {
+  if (typeof value === 'string') return { name: value.trim(), boards: [] };
+  return {
+    name: String(value?.name || '').trim(),
+    boards: (Array.isArray(value?.boards) ? value.boards : [])
+      .map(board => String(typeof board === 'string' ? board : board?.url || '').trim())
+      .filter(Boolean),
+  };
+}
+
+function renderTargetCompanyList() {
+  const list = $('#targetCompanyList');
+  if (!list) return;
+  const companies = state.targetCompanies || [];
+  const expanded = Number(list.dataset.expanded ?? -1);
+  list.innerHTML = companies.length ? companies.map((company, index) => {
+    const scannable = company.boards.filter(url => classifyBoardUrlClient(url));
+    const summary = scannable.length
+      ? `${scannable.length} board URL${scannable.length === 1 ? '' : 's'} scanned`
+      : 'No scannable board URL · guessed boards still run';
+    return `
+      <div class="entity-row${index === expanded ? ' open' : ''}">
+        <div class="entity-row-head">
+          <button type="button" class="entity-name" data-expand="${index}" aria-expanded="${index === expanded}">
+            <strong>${escapeHtml(company.name)}</strong>
+            <span>${escapeHtml(summary)}${company.boards.length > scannable.length ? ' · 1 or more links not scannable' : ''}</span>
+          </button>
+          <button type="button" class="mini-action" data-remove="${index}" aria-label="Remove ${escapeHtml(company.name)}">Remove</button>
+        </div>
+        ${index === expanded ? `
+          <div class="entity-row-body">
+            <p class="helper-text">Unrecognized careers sites are stored but not fetched, and they do not stop the guessed Greenhouse, Lever, and Ashby boards.</p>
+            ${company.boards.length ? `<div class="board-list">${company.boards.map((url, boardIndex) => {
+              const provider = classifyBoardUrlClient(url);
+              return `<div class="board-item">
+                <span class="board-provider ${provider ? 'ok' : 'warn'}">${escapeHtml(provider || 'not scannable')}</span>
+                <span class="board-url" title="${escapeHtml(url)}">${escapeHtml(url)}</span>
+                <button type="button" class="mini-action" data-remove-board="${index}:${boardIndex}">Remove</button>
+              </div>`;
+            }).join('')}</div>` : ''}
+            <div class="entity-add">
+              <input type="url" data-board-input="${index}" placeholder="https://job-boards.greenhouse.io/company">
+              <button type="button" class="button-secondary compact" data-add-board="${index}">Add URL</button>
+            </div>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('') : '<div class="empty-mini">No target companies yet. Add one above.</div>';
+}
+
+function wireTargetCompanyEditor(initial = []) {
+  state.targetCompanies = (initial || []).map(normalizeClientCompany).filter(item => item.name);
+  const list = $('#targetCompanyList');
+  if (list) list.dataset.expanded = '-1';
+  const addCompany = () => {
+    const input = $('#targetCompanyInput');
+    const name = input?.value.trim();
+    if (!name) return;
+    if (state.targetCompanies.some(item => item.name.toLowerCase() === name.toLowerCase())) {
+      input.value = '';
+      return;
+    }
+    state.targetCompanies.push({ name, boards: [] });
+    input.value = '';
+    if (list) list.dataset.expanded = String(state.targetCompanies.length - 1);
+    renderTargetCompanyList();
+    input.focus();
+  };
+  const addBoard = index => {
+    const input = $(`#targetCompanyList [data-board-input="${index}"]`);
+    let url = input?.value.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) url = `https://${url}`;
+    state.targetCompanies[index].boards.push(url);
+    renderTargetCompanyList();
+    $(`#targetCompanyList [data-board-input="${index}"]`)?.focus();
+  };
+  renderTargetCompanyList();
+  $('#targetCompanyAdd')?.addEventListener('click', addCompany);
+  $('#targetCompanyInput')?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addCompany();
+  });
+  $('#targetCompanyList')?.addEventListener('keydown', event => {
+    if (event.key !== 'Enter' || !event.target.dataset.boardInput) return;
+    event.preventDefault();
+    addBoard(Number(event.target.dataset.boardInput));
+  });
+  $('#targetCompanyList')?.addEventListener('click', event => {
+    const expand = event.target.closest('[data-expand]');
+    if (expand) {
+      const index = Number(expand.dataset.expand);
+      const current = Number(list.dataset.expanded ?? -1);
+      list.dataset.expanded = String(current === index ? -1 : index);
+      renderTargetCompanyList();
+      return;
+    }
+    const remove = event.target.closest('[data-remove]');
+    if (remove) {
+      state.targetCompanies.splice(Number(remove.dataset.remove), 1);
+      list.dataset.expanded = '-1';
+      renderTargetCompanyList();
+      return;
+    }
+    const addUrl = event.target.closest('[data-add-board]');
+    if (addUrl) return addBoard(Number(addUrl.dataset.addBoard));
+    const removeBoard = event.target.closest('[data-remove-board]');
+    if (removeBoard) {
+      const [index, boardIndex] = removeBoard.dataset.removeBoard.split(':').map(Number);
+      state.targetCompanies[index].boards.splice(boardIndex, 1);
+      renderTargetCompanyList();
+    }
+  });
+}
+
+async function openApplicationPanel(card) {
+  const { company, role } = cardCompanyRole(card);
+  let data;
+  try {
+    data = await api(`/api/application-notes?company=${encodeURIComponent(company)}&role=${encodeURIComponent(role)}`);
+  } catch (err) {
+    showToast(err.message || 'Could not load notes for this role');
+    return;
+  }
+  let overlay = $('#applicationPanel');
+  if (!overlay) {
+    overlay = document.createElement('div');
+    overlay.id = 'applicationPanel';
+    overlay.className = 'onboarding-overlay';
+    document.body.append(overlay);
+  }
+  const render = () => {
+    const n = data.notes || {};
+    overlay.innerHTML = `
+      <div class="onboarding-panel application-panel">
+        <header>
+          <div>
+            <p class="eyebrow">Application notes</p>
+            <h2>${escapeHtml(role)} - ${escapeHtml(company)}</h2>
+            <p class="helper-text">Kept against the company and role, so it survives tracker rebuilds.</p>
+          </div>
+          <button class="mini-action" type="button" id="closeApplicationPanel">Close</button>
+        </header>
+        <div class="app-panel-fields">
+          <label class="field-label">Salary I asked for
+            <input id="panelSalary" type="text" maxlength="120" value="${escapeHtml(n.salary_asked || '')}" placeholder="Base or range">
+          </label>
+          <label class="field-label">Recruiter or contact
+            <input id="panelContact" type="text" maxlength="200" value="${escapeHtml(n.contact || '')}" placeholder="Name, email, or phone">
+          </label>
+          <label class="field-label">Applied via
+            <input id="panelAppliedVia" type="text" maxlength="120" value="${escapeHtml(n.appliedVia || n.applied_via || '')}" placeholder="LinkedIn, referral, company site">
+          </label>
+        </div>
+        <label class="field-label">Notes
+          <textarea id="panelNotes" rows="6" placeholder="What you want to remember about this role.">${escapeHtml(n.notes || '')}</textarea>
+        </label>
+        <div class="app-panel-timeline">
+          <div class="app-panel-timeline-head">
+            <strong>Timeline</strong>
+            <span class="helper-text">${(data.timeline || []).length} entr${(data.timeline || []).length === 1 ? 'y' : 'ies'}</span>
+          </div>
+          <div class="entity-add">
+            <input id="panelEntryDate" type="date" value="${escapeHtml(new Date().toISOString().slice(0, 10))}">
+            <input id="panelEntryNote" type="text" maxlength="4000" placeholder="What happened">
+            <button type="button" class="button-secondary compact" id="panelEntryAdd">Add</button>
+          </div>
+          ${(data.timeline || []).length ? `<ul class="timeline-list">${data.timeline.map(item => `
+            <li>
+              <span class="timeline-date">${escapeHtml(item.entry_at || '')}</span>
+              <span class="timeline-note">${escapeHtml(item.note || '')}</span>
+              <button type="button" class="mini-action" data-timeline-remove="${escapeHtml(String(item.id))}">Remove</button>
+            </li>`).join('')}</ul>` : '<p class="helper-text">Nothing logged yet.</p>'}
+        </div>
+        <footer>
+          <button type="button" class="button-primary" id="saveApplicationNotes">Save notes</button>
+        </footer>
+      </div>
+    `;
+    overlay.hidden = false;
+    $('#closeApplicationPanel')?.addEventListener('click', () => { overlay.hidden = true; });
+    $('#saveApplicationNotes')?.addEventListener('click', async () => {
+      try {
+        data = await api('/api/application-notes', {
+          method: 'POST',
+          body: JSON.stringify({
+            company,
+            role,
+            salaryAsked: $('#panelSalary').value,
+            contact: $('#panelContact').value,
+            appliedVia: $('#panelAppliedVia').value,
+            notes: $('#panelNotes').value,
+          }),
+        });
+        showToast('Notes saved');
+        overlay.hidden = true;
+        await bootstrap();
+      } catch (err) {
+        showToast(err.message || 'Could not save notes');
+      }
+    });
+    $('#panelEntryAdd')?.addEventListener('click', async () => {
+      const note = $('#panelEntryNote').value.trim();
+      if (!note) { showToast('Write what happened first'); return; }
+      try {
+        data = await api('/api/application-timeline', {
+          method: 'POST',
+          body: JSON.stringify({ company, role, note, entryAt: $('#panelEntryDate').value }),
+        });
+        render();
+      } catch (err) {
+        showToast(err.message || 'Could not save');
+      }
+    });
+    overlay.querySelectorAll('[data-timeline-remove]').forEach(button => {
+      button.addEventListener('click', async () => {
+        data = await api('/api/application-timeline', {
+          method: 'POST',
+          body: JSON.stringify({ company, role, deleteId: button.dataset.timelineRemove }),
+        });
+        render();
+      });
+    });
+  };
+  render();
+}
+
 async function showOnboardingWizard(force = false) {
   const payload = await api('/api/onboarding');
   state.onboarding = payload.status;
@@ -2234,7 +2594,35 @@ async function showOnboardingWizard(force = false) {
         <label><input type="checkbox" name="linkedin" ${cfg.connections?.linkedin?.enabled ? 'checked' : ''}> LinkedIn manual browser session</label>
         <label><input type="checkbox" name="websearch" ${cfg.connections?.providers?.websearch ? 'checked' : ''}> Web search fallback</label>
         <textarea name="rssFeeds" placeholder="Custom RSS/feed URLs, one per line">${escapeHtml((cfg.connections?.rssFeeds || []).join('\n'))}</textarea>
-        <textarea name="targetCompanies" placeholder="Target companies, one per line">${escapeHtml((cfg.connections?.targetCompanies || []).join('\n'))}</textarea>
+        <div class="adzuna-fields">
+          <h4>Adzuna API</h4>
+          <p class="helper-text">Keys are stored in a 0600 secrets file next to the app token, never in suitor.config.json. Unrecognized careers sites on target companies are stored but not fetched.</p>
+          <label><input type="checkbox" name="adzunaEnabled" ${cfg.connections?.providers?.adzuna ? 'checked' : ''}> Include Adzuna in scans</label>
+          <label class="field-label">App ID
+            <input id="fieldAdzunaId" name="adzunaAppId" type="password" autocomplete="off" spellcheck="false" placeholder="from your Adzuna dashboard">
+          </label>
+          <label class="field-label">App Key
+            <input id="fieldAdzunaKey" name="adzunaAppKey" type="password" autocomplete="off" spellcheck="false" placeholder="leave blank to keep the saved key">
+          </label>
+          <label class="field-label">What
+            <input id="fieldAdzunaWhat" name="adzunaWhat" type="text" value="${escapeHtml(cfg.connections?.adzunaSearch?.what || '')}" placeholder="role keywords">
+          </label>
+          <label class="field-label">Where
+            <input id="fieldAdzunaWhere" name="adzunaWhere" type="text" value="${escapeHtml(cfg.connections?.adzunaSearch?.where || '')}" placeholder="Remote">
+          </label>
+          <label class="field-label">Country
+            <input id="fieldAdzunaCountry" name="adzunaCountry" type="text" maxlength="2" value="${escapeHtml(cfg.connections?.adzunaSearch?.country || 'us')}" placeholder="us">
+          </label>
+        </div>
+        <div class="target-company-editor">
+          <h4>Target companies</h4>
+          <p class="helper-text">Type a name and press Enter. Expand a row to paste that company's board URL. Suitor can scan Greenhouse, Lever, Ashby, SmartRecruiters, Workable, and Workday. Other careers URLs are stored but not fetched, and they do not replace the guessed boards.</p>
+          <div class="entity-add">
+            <input id="targetCompanyInput" type="text" maxlength="80" placeholder="Company name" autocomplete="off">
+            <button type="button" class="button-secondary compact" id="targetCompanyAdd">Add</button>
+          </div>
+          <div id="targetCompanyList" class="entity-list"></div>
+        </div>
       </section>
       <footer>
         <button class="button-primary" type="submit">Save and Continue</button>
@@ -2243,6 +2631,7 @@ async function showOnboardingWizard(force = false) {
   `;
   overlay.hidden = false;
   wireIntakeChat(stages);
+  wireTargetCompanyEditor(cfg.connections?.targetCompanies || []);
   $('#closeOnboardingBtn')?.addEventListener('click', () => { overlay.hidden = true; });
   $('#wizardResumeInput')?.addEventListener('change', async (event) => {
     const file = event.target.files?.[0];
@@ -2290,13 +2679,33 @@ async function showOnboardingWizard(force = false) {
       },
       connections: {
         ...(cfg.connections || {}),
-        linkedin: { enabled: form.get('linkedin') === 'on' },
-        providers: { ...(cfg.connections?.providers || {}), websearch: form.get('websearch') === 'on' },
+        linkedin: { ...(cfg.connections?.linkedin || {}), enabled: form.get('linkedin') === 'on' },
+        providers: {
+          ...(cfg.connections?.providers || {}),
+          websearch: form.get('websearch') === 'on',
+          adzuna: form.get('adzunaEnabled') === 'on',
+        },
         rssFeeds: String(form.get('rssFeeds') || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean),
-        targetCompanies: String(form.get('targetCompanies') || '').split(/\r?\n/).map(v => v.trim()).filter(Boolean),
+        targetCompanies: state.targetCompanies || [],
       },
       onboarded: true,
     };
+    const adzunaAppId = String(form.get('adzunaAppId') || '').trim();
+    const adzunaAppKey = String(form.get('adzunaAppKey') || '').trim();
+    await api('/api/adzuna', {
+      method: 'POST',
+      body: JSON.stringify({
+        enabled: form.get('adzunaEnabled') === 'on',
+        ...(adzunaAppId ? { appId: adzunaAppId } : {}),
+        ...(adzunaAppKey ? { appKey: adzunaAppKey } : {}),
+        search: {
+          what: String(form.get('adzunaWhat') || '').trim(),
+          where: String(form.get('adzunaWhere') || '').trim(),
+          country: String(form.get('adzunaCountry') || 'us').trim(),
+        },
+      }),
+    });
+    await api('/api/target-companies', { method: 'POST', body: JSON.stringify({ companies: state.targetCompanies || [] }) });
     const saved = await api('/api/onboarding', { method: 'POST', body: JSON.stringify(next) });
     state.onboarding = saved.status;
     overlay.hidden = true;
@@ -2322,6 +2731,8 @@ async function bootstrap() {
     renderMasterResume(data.masterResume || null);
     renderBrowserStatus(data.browser || {});
     renderConnections(data.connections || {});
+    state.linkedinLanes = parseLaneList(data.connections?.linkedin?.searchQuery || data.connections?.linkedinSearchQuery || '');
+    renderLinkedInLanes();
     if (els.assessmentRoot) els.assessmentRoot.textContent = 'PDF and Word assessments stay inside this profile and are used only as soft job-fit context.';
     els.resumePreview.value = data.resumePreview || '';
     updateTailorState();
@@ -2813,6 +3224,27 @@ els.lastScanBtn.addEventListener('click', async () => {
   }
 });
 
+els.linkedinQuery?.addEventListener('keydown', event => {
+  if (event.key !== 'Enter') return;
+  event.preventDefault();
+  addLinkedInLane();
+});
+
+document.addEventListener('click', event => {
+  const openLane = event.target.closest?.('.lane-chip-open');
+  if (openLane) {
+    window.open(localLinkedInJobsUrl(openLane.dataset.lane), '_blank', 'noopener,noreferrer');
+    return;
+  }
+  const removeLane = event.target.closest?.('.lane-chip-remove');
+  if (removeLane && !removeLane.disabled) {
+    const index = Number(removeLane.dataset.removeLane);
+    const lanes = [...(state.linkedinLanes || [])];
+    const removed = lanes.splice(index, 1)[0];
+    if (removed) saveLinkedInLanes(lanes, `Removed ${removed}`);
+  }
+});
+
 els.openLinkedInLocalBtn?.addEventListener('click', () => {
   activateView('scans');
   window.open(localLinkedInJobsUrl(), '_blank', 'noopener,noreferrer');
@@ -2837,10 +3269,10 @@ els.openLinkedInBtn?.addEventListener('click', async () => {
 els.linkedinSearchBtn?.addEventListener('click', async () => {
   activateView('scans');
   setButtonLoading(els.linkedinSearchBtn, true, 'Searching LinkedIn');
-  const query = els.linkedinQuery.value.trim();
+  const query = (state.linkedinLanes || []).join('; ') || els.linkedinQuery.value.trim();
   const poller = setInterval(refreshBrowserStatus, 1800);
   try {
-    await streamPost('/api/browser/linkedin-search', { query, limit: 10 }, {
+    await streamPost('/api/browser/linkedin-search', { query, limit: 6 }, {
       set innerHTML(v) {
         els.browserLog.textContent = plainTextFromRendered(v);
         refreshBrowserStatus();

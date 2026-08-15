@@ -174,9 +174,11 @@
               </div>
             </div>
             <div class="browser-search-row">
-              <input id="linkedinQuery" type="search" placeholder="Optional custom LinkedIn query">
-              <p class="browser-filter-note">Local LinkedIn opens in the browser you are using now. Windows Browser is the server-side Playwright session shown in the preview below.</p>
+              <input id="linkedinQuery" type="search" placeholder="Add a search lane and press Enter">
+              <span id="laneCount" class="lane-count"></span>
+              <p class="browser-filter-note">Each short phrase is its own LinkedIn search. Press Enter to add a lane. Local LinkedIn opens the first lane in this browser; Windows Browser is the server-side Playwright session.</p>
             </div>
+            <div id="linkedinLanes" class="lane-chips" hidden></div>
             <div id="browserResults" class="browser-results" hidden></div>
             <div class="browser-grid">
               <div class="browser-preview-wrap">

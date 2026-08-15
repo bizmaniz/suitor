@@ -4,6 +4,7 @@ import { chromium } from 'playwright';
 import { cpSync, existsSync, mkdirSync, writeFileSync, readFileSync, rmSync, renameSync } from 'fs';
 import { basename, dirname, relative, resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { runSearchLanes, splitQueries } from './linkedin_lanes.mjs';
 
 const APP_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 function envValue(name, legacyName, fallback = '') {
@@ -672,7 +673,7 @@ export async function extractLinkedInJobs(page, limit, options = {}) {
   return enriched;
 }
 
-async function searchLinkedIn(query, limit = 10) {
+async function searchLinkedInSingle(query, limit = 10) {
   try { if (existsSync(CANCEL_PATH)) rmSync(CANCEL_PATH, { force: true }); } catch {}
   status({ state: 'launching', log: `Starting LinkedIn browser search for: ${query || DEFAULT_QUERY}` });
   status({ state: 'launching', log: `Applying LinkedIn filters: ${linkedInFilterSummary()}` });
@@ -770,6 +771,32 @@ async function searchLinkedIn(query, limit = 10) {
   }
 }
 
+// `limit` is the result quota for a single search. When the query holds several
+// `;`-separated lanes it becomes the per-lane quota, so every lane always runs.
+async function searchLinkedIn(queryInput, limit = 10, companyInput = '') {
+  const titleLanes = splitQueries(queryInput || DEFAULT_QUERY).map(query => ({ query }));
+  const companyLanes = splitQueries(companyInput).map(company => ({ query: company, company }));
+  const lanes = [...titleLanes, ...companyLanes];
+  if (lanes.length <= 1 && !lanes[0]?.company) {
+    return searchLinkedInSingle(lanes[0]?.query || DEFAULT_QUERY, limit);
+  }
+  const merged = await runSearchLanes(lanes, limit, async (query, perLane) => {
+    await searchLinkedInSingle(query, perLane);
+    try { return JSON.parse(readFileSync(RESULTS_PATH, 'utf-8')); } catch { return {}; }
+  }, message => status({ state: 'searching', log: message }));
+  writeJsonAtomic(RESULTS_PATH, {
+    generatedAt: now(),
+    query: merged.query,
+    filters: merged.filters,
+    lanes: merged.lanes,
+    inspectedUniqueCount: merged.inspectedUniqueCount,
+    skippedBelowComp: merged.skippedBelowComp,
+    results: merged.results,
+  });
+  status({ state: 'done', resultCount: merged.results.length, log: merged.logs.at(-1) });
+  return merged.results;
+}
+
 async function main() {
   const args = parseArgs();
   const command = args.get('command') || args.get('cmd') || 'status';
@@ -792,8 +819,9 @@ async function main() {
   }
   if (command === 'linkedin-search') {
     const query = args.get('query') || DEFAULT_QUERY;
+    const companies = args.get('companies') || '';
     const limit = Number(args.get('limit') || envValue('SUITOR_LINKEDIN_LIMIT', 'SUITOR_LINKEDIN_LIMIT', 10));
-    await searchLinkedIn(query, limit);
+    await searchLinkedIn(query, limit, companies);
     return;
   }
   throw new Error(`Unknown browser command: ${command}`);
